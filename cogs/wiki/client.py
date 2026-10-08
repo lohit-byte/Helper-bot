@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import json
-import os
 import shutil
 from urllib.parse import urlencode
 import aiohttp
@@ -16,8 +15,8 @@ TIMEOUT = aiohttp.ClientTimeout(total=20)
 CURL = shutil.which("curl")
 
 class WikiClient:
-    def __init__(self):
-        self.api_url = os.environ.get("WIKI_API_URL", "https://monsterlegends.fandom.com/api.php")
+    def __init__(self, base_url="https://monsterlegends.fandom.com"):
+        self.api_url = f"{base_url}/api.php"
         self._session: aiohttp.ClientSession | None = None
 
     async def _get_session(self) -> aiohttp.ClientSession:
@@ -28,24 +27,33 @@ class WikiClient:
     async def close(self) -> None:
         if self._session and not self._session.closed:
             await self._session.close()
+        self._session = None
 
     async def _curl_get(self, params: dict) -> tuple[int, str]:
         url = f"{self.api_url}?{urlencode(params)}"
         proc = await asyncio.create_subprocess_exec(
             "curl", "-s", "-m", "20", "-A", USER_AGENTS[0], "-w", "\n%{http_code}", url,
-            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE,
+            stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
         )
-        out, _ = await proc.communicate()
+        try:
+            out, _ = await proc.communicate()
+        except asyncio.CancelledError:
+            proc.kill()
+            await proc.wait()
+            raise
         body, _, code = out.decode("utf-8", "replace").rpartition("\n")
         return (int(code) if code.strip().isdigit() else 0), body
 
     async def api(self, params: dict) -> dict:
         params = {**params, "format": "json"}
         status, body = 0, ""
+        last_exception = None
+        
         if CURL:
             try:
                 status, body = await self._curl_get(params)
             except Exception as e:
+                last_exception = e
                 print(f"[wiki] curl failed: {e!r}")
 
         if status != 200:
@@ -55,11 +63,15 @@ class WikiClient:
                     async with session.get(self.api_url, params=params, headers={"User-Agent": ua}, timeout=TIMEOUT) as r:
                         status, body = r.status, await r.text()
                 except Exception as e:
+                    last_exception = e
                     print(f"[wiki] aiohttp failed: {e!r}")
                     continue
                 if status == 200: break
 
-        if status != 200: raise RuntimeError(f"Wiki returned HTTP {status}: {body[:200]!r}")
+        if status != 200:
+            if last_exception:
+                raise last_exception
+            raise RuntimeError(f"Wiki returned HTTP {status}: {body[:200]!r}")
         try:
             return json.loads(body)
         except json.JSONDecodeError:
@@ -81,5 +93,4 @@ class WikiClient:
         parsed = data.get("parse", {})
         html = parsed.get("text", {}).get("*", "")
         cats = [c.get("*", "") for c in parsed.get("categories", []) if "hidden" not in c]
-        # Offload blocking BeautifulSoup parsing to a separate thread
         return await asyncio.to_thread(parse_monster, html, cats)

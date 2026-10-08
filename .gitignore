@@ -1,0 +1,10 @@
+# Envirenment Variables (NEVER COMMIT THIS)
+.env
+
+# Database (Live data, never commit)
+race_state.db
+
+# Python Cache
+__pycache__/
+*.pyc
+venv/

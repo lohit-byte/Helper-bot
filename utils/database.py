@@ -13,18 +13,19 @@ class Database:
         self.cursor.execute("""
             CREATE TABLE IF NOT EXISTS race_state (
                 channel_id INTEGER PRIMARY KEY,
-                lap INTEGER DEFAULT 0,  -- Changed to 0 for 0.1 start
-                node INTEGER DEFAULT 0,  -- Changed to 0 so first newnode = 0.1
+                lap INTEGER DEFAULT 0,
+                node INTEGER DEFAULT 0,
                 ofa_holder INTEGER DEFAULT NULL,
                 ofa_target TEXT DEFAULT NULL,
                 ofa_done BOOLEAN DEFAULT 0,
                 dyp_progress INTEGER DEFAULT 0,
                 dyp_target INTEGER DEFAULT 10,
-                je_progress INTEGER DEFAULT 0,
-                je_target INTEGER DEFAULT 4,
+                je_progress TEXT DEFAULT '0',
+                je_target TEXT DEFAULT '4',
                 je_done BOOLEAN DEFAULT 0,
                 mute_until REAL DEFAULT 0,
-                event_active BOOLEAN DEFAULT 0
+                event_active BOOLEAN DEFAULT 0,
+                task_desc TEXT DEFAULT 'Race Task'
             )
         """)
         self.cursor.execute("""
@@ -45,6 +46,7 @@ class Database:
         for col, dtype, default in [
             ("event_active", "BOOLEAN", "0"),
             ("ofa_done", "BOOLEAN", "0"),
+            ("task_desc", "TEXT", "'Race Task'"),
         ]:
             try:
                 self.cursor.execute(f"ALTER TABLE race_state ADD COLUMN {col} {dtype} DEFAULT {default}")
@@ -65,7 +67,7 @@ class Database:
 
     ALLOWED_COLUMNS = {
         'lap', 'node', 'ofa_holder', 'ofa_target', 'ofa_done', 'dyp_progress', 'dyp_target',
-        'je_progress', 'je_target', 'je_done', 'mute_until', 'event_active'
+        'je_progress', 'je_target', 'je_done', 'mute_until', 'event_active', 'task_desc'
     }
 
     def update_state(self, channel_id, **kwargs):

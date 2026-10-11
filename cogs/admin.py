@@ -25,7 +25,7 @@ class Admin(commands.Cog):
         if is_active:
             await ctx.send("✅ **Race event is now ACTIVE.** Commands are enabled.")
         else:
-            await ctx.send("⏸️ **Race event is now DISABLED.** Commands are paused.")
+            await ctx.send("⏹️ **Race event is now DISABLED.** Commands are paused.")
 
     @commands.command(name="race_hold")
     @commands.has_any_role(*config.ADMIN_ROLES)

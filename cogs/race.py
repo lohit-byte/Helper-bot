@@ -272,7 +272,7 @@ class RaceManager(commands.Cog):
                     await ctx.send("✅ JE is already completed for this node.")
                     return
                 db.update_state(ctx.channel.id, je_done=1, je_progress=str(state['je_target']))
-                await ctx.send(f"🎉 **Joint Effort (JE) completed** by {ctx.author.mention}! Waiting for `!race newnode` command.")
+                await ctx.send(f"🎉 **Joint Effort (JE) completed** by {ctx.author.mention}!")
 
             elif args and args.startswith("+"):
                 if state['je_done']:

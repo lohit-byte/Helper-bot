@@ -448,7 +448,8 @@ class RaceManager(commands.Cog):
                         lines.append(f"⏰ **JE:** `{state['je_progress']}/{state['je_target']}`")
                 
                 if state['ofa_holder'] and not state['ofa_done']:
-                    lines.append(f"⏰ **OFA:** In progress by <@{state['ofa_holder']}>")
+                    ofa_mention = f"<@{state['ofa_holder']}>”
+                    lines.append(f"⏰ **OFA:** In progress by {ofa_holder}")
                 elif state['ofa_holder'] and state['ofa_done']:
                     pass
                 elif pending_ofa is not None:

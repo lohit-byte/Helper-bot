@@ -13,7 +13,6 @@ from utils.database import db
 UNITS = {'K': 1e3, 'M': 1e6, 'B': 1e9}
 
 def parse_amount(s):
-    """Parses strings like '5.29 M', '500k', '10' into a numeric float."""
     m = re.fullmatch(r'\s*([\d.,]+)\s*([KMB])?\s*', str(s), re.IGNORECASE)
     if not m:
         raise ValueError(f"bad amount: {s}")
@@ -21,7 +20,6 @@ def parse_amount(s):
     return num * UNITS.get((m.group(2) or '').upper(), 1)
 
 def format_amount(v):
-    """Formats a numeric float back into a readable string with K/M/B suffix."""
     for suffix, div in (('B', 1e9), ('M', 1e6), ('K', 1e3)):
         if v >= div:
             return f"{round(v / div, 2):g} {suffix}"
@@ -53,13 +51,10 @@ class RaceManager(commands.Cog):
             img = Image.open(io.BytesIO(image_bytes))
             width, height = img.size
 
-            # Full game screenshot -> crop the quest panel.
-            # Already-cropped panel (portrait) -> keep as is.
             if width / height > 1.3:
                 img = img.crop((int(width * 0.64), int(height * 0.22),
                                 width, int(height * 0.93)))
 
-            # Resize to 1.5x and save as JPEG to stay under the 1MB limit
             img = img.resize((int(img.width * 1.5), int(img.height * 1.5)), Image.LANCZOS)
             img_enhanced = ImageOps.autocontrast(img.convert('L'))
 
@@ -94,13 +89,12 @@ class RaceManager(commands.Cog):
             lines = (results[0].get("TextOverlay") or {}).get("Lines") or []
             print(f"[OCR Raw] {text!r}")
 
-            # a/b where each side is an int, decimal, or has a K/M/B suffix
             FRAC = re.compile(
                 r'(\d+(?:[.,]\d+)?(?:\s*[KMB]\b)?)\s*/\s*(\d+(?:[.,]\d+)?(?:\s*[KMB]\b)?)',
                 re.IGNORECASE
             )
 
-            found = []  # (y_position, target)
+            found = []
             if lines:
                 for ln in lines:
                     top = ln.get("MinTop", 0)
@@ -117,10 +111,10 @@ class RaceManager(commands.Cog):
                 t = t.strip().replace(',', '.')
                 return re.sub(r'(\d)\s*([KMB])$', r'\1 \2', t, flags=re.IGNORECASE).upper()
 
-            targets = [norm(t) for _, t in found][-3:]  # the 3 quest cards
+            targets = [norm(t) for _, t in found][-3:]
 
             ofa_target = dyp_target = je_target = None
-            if len(targets) == 3:  # only trust a full set
+            if len(targets) == 3:
                 ofa_target = targets[0]
                 je_target = targets[2]
                 try:
@@ -152,7 +146,8 @@ class RaceManager(commands.Cog):
                 await ctx.send("⏸️ The race event is currently disabled by staff.")
                 return
 
-        if action is None:
+        # Allow `!race status` as an alias for `!race`
+        if action is None or action == "status":
             embed = discord.Embed(title="🏁 Current Race Node Status", color=discord.Color.blue())
             embed.add_field(name="Node", value=f"**Lap {state['lap']}.{state['node']}**", inline=False)
             
@@ -165,7 +160,8 @@ class RaceManager(commands.Cog):
                 ofa_status = "Available ✅"
             embed.add_field(name="One For All (OFA)", value=ofa_status, inline=False)
             
-            dyp_status = f"{state['dyp_progress']}/{state['dyp_target']} contributions"
+            # Updated DYP status to show Completed emoji
+            dyp_status = "✅ Completed" if state['dyp_progress'] >= state['dyp_target'] else f"{state['dyp_progress']}/{state['dyp_target']} contributions"
             embed.add_field(name="Do Your Part (DYP)", value=dyp_status, inline=True)
             
             je_status = "✅ Completed" if state['je_done'] else f"{state['je_progress']}/{state['je_target']} contributions"
@@ -262,7 +258,10 @@ class RaceManager(commands.Cog):
                 await ctx.send(f"⏳ An OFA claim for <@{pending['user_id']}> is already pending approval.")
                 return
             
-            role_pings = " ".join([f"<@&{rid}>" for rid in config.OFA_PING_ROLES])
+            # NEW: Get channel-specific ping roles
+            ping_roles = config.OFA_PING_ROLES.get(ctx.channel.id, [])
+            role_pings = " ".join([f"<@&{rid}>" for rid in ping_roles])
+            
             msg = await ctx.send(f"🏆 {ctx.author.mention} is claiming **OFA**! {role_pings}\nPlease react ✅ to approve or ❌ to deny.")
             await msg.add_reaction("✅")
             await msg.add_reaction("❌")
@@ -447,7 +446,6 @@ class RaceManager(commands.Cog):
                     except ValueError:
                         lines.append(f"⏰ **JE:** `{state['je_progress']}/{state['je_target']}`")
                 
-                # FIXED SECTION: Do not put complicated quotes inside f-strings
                 if state['ofa_holder'] and not state['ofa_done']:
                     ofa_mention = f"<@{state['ofa_holder']}>"
                     lines.append(f"⏰ **OFA:** In progress by {ofa_mention}")

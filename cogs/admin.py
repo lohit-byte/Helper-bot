@@ -118,6 +118,12 @@ class Admin(commands.Cog):
             value="`!race_event on/off` - Enable/Disable race commands\n`!race_hold @user` - Locks OFA for a user\n`!race_release` - Releases OFA\n`!race_reset` - Resets node to start Lap 0.1\n`!race_set <lap> <node>` - Manually set lap/node\n`!race dyp skip` - Instantly complete DYP\n`!race_bypass` - Manually +1 DYP\n`!race_bypass_je` - Manually +1 JE\n`!race set dyp <num>` - Set DYP target\n`!race set je <num>` - Set JE target", 
             inline=False
         )
+
+        embed.add_field(
+            name="🔹 Race Tasks", 
+            value="`!race OFA` - Claims One For All\n`!race OFA done` - Marks your OFA as completed\n`!race dyp done` / `!dmp` / `!race dyp +5` - Logs DYP\n`!race je +1` / `+5` / `done` / `skip` - Updates JE\n`!race newnode` - Attach screenshot for next node", 
+            inline=False
+        )
         
         await ctx.send(embed=embed)
 

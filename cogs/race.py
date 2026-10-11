@@ -2,7 +2,6 @@ import discord
 from discord.ext import commands, tasks
 import re
 import time
-import asyncio
 import config
 from utils.database import db
 
@@ -27,13 +26,16 @@ def format_amount(v):
 
 # --- Flexible Node Argument Parser ---
 NUM = re.compile(r'(?<![\w.])\d+(?:[.,]\d+)?', re.IGNORECASE)
-# Updated regex to recognise full words like "billion, "million", "thousand"
-CHUNK = re.compile(r'(\d+(?:[.,]\d+)?)\s*(?:([KMB])(?![A-Za-z]))?\s*(.*)', re.IGNORECASE | re.DOTALL)
+
+CHUNK = re.compile(
+    r'(\d+(?:[.,]\d+)?)\s*(?:(billion|million|thousand|[KMB])(?![A-Za-z]))?\s*(.*)',
+    re.IGNORECASE | re.DOTALL
+)
 
 SUFFIX_MAP = {
-    'k' : 'K', 'thousand' : 'K'
-    'm' : 'M', 'million' : 'M'
-    'b' : 'B', 'billion' : 'B'
+    'k': 'K', 'thousand': 'K',
+    'm': 'M', 'million': 'M',
+    'b': 'B', 'billion': 'B'
 }
 
 def parse_node_args(args):
@@ -57,9 +59,11 @@ def parse_node_args(args):
         if not m:
             raise ValueError(f"can't read: {c}")
         num = m.group(1).replace(',', '.')
-        suffix = (m.group(2) or '').upper()
+        raw_suffix = (m.group(2) or '').lower()
+        suffix = SUFFIX_MAP.get(raw_suffix, '')
+        # FIXED: Added space before suffix for consistency with format_amount
         out.append((f"{num} {suffix}".strip(), m.group(3).strip()))
-    return out  # [(ofa_target, ofa_desc), (dyp_target, dyp_desc), (je_target, je_desc)]
+    return out
 
 
 def is_race_channel():
@@ -116,7 +120,7 @@ class RaceManager(commands.Cog):
                 await ctx.send("❌ Staff only.")
                 return
 
-            usage = ("❌ Usage: `!race newnode 53 hatch 13 breed 5 craft gold relics`\n"
+            usage = ("❌ Usage: `!race newnode 53 hatch | 13 breed | 5 craft gold relics`\n"
                      "Also works: `53hatch 13breed 5craft gold relics` or "
                      "`24.4M collect gold | 10 rank up | 5.29M feed`")
             if not args:

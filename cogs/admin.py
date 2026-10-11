@@ -116,7 +116,18 @@ class Admin(commands.Cog):
         
         embed.add_field(
             name="🔹 Staff Only", 
-            value="`!race_event on/off` - Enable/Disable race commands\n`!race newnode <OFA> <DYP> <JE> [desc]` - Manually set node targets\n`!race set desc <text>` - Set task description\n`!race_hold @user` - Locks OFA for a user\n`!race_release` - Releases OFA\n`!race_reset` - Resets node to start\n`!race_set <lap> <node>` - Manually set lap/node\n`!race_bypass` - Manually +1 DYP\n`!race_bypass_je` - Manually +1 JE\n`!race set dyp <num>` - Set DYP target", 
+            value="`!race_event on/off` - Enable/Disable race commands\n"
+                  "`!race newnode <targets>` - Manually set node targets (supports spaces or `|`)\n"
+                  "*Example:* `!race newnode 53hatch 13breed 5craft gold relics`\n"
+                  "*Example:* `!race newnode 24.4M collect gold | 10 rank up | 5.29M feed`\n"
+                  "`!race set desc <text>` - Set task description\n"
+                  "`!race_hold @user` - Locks OFA for a user\n"
+                  "`!race_release` - Releases OFA\n"
+                  "`!race_reset` - Resets node to start\n"
+                  "`!race_set <lap> <node>` - Manually set lap/node\n"
+                  "`!race_bypass` - Manually +1 DYP\n"
+                  "`!race_bypass_je` - Manually +1 JE\n"
+                  "`!race set dyp <num>` - Set DYP target", 
             inline=False
         )
         

@@ -70,27 +70,56 @@ class RaceManager(commands.Cog):
             print(f"[OCR] empty result, exit code: {res.get('FileParseExitCode')}, "
                   f"msg: {res.get('ErrorMessage')}", flush=True)
 
-        # Better regex that accounts for OCR misreading '/' as '|' or '\'
+        return self._parse_cards(text)
+
+    def _parse_cards(self, text):
         FRAC = re.compile(
             r'(\d+(?:[.,]\d+)?(?:\s*[KMB]\b)?)\s*[/|\\]\s*(\d+(?:[.,]\d+)?(?:\s*[KMB]\b)?)',
             re.IGNORECASE
         )
 
-        found = []
-        if lines:
-            for ln in lines:
-                for m in FRAC.finditer(ln.get("LineText", "")):
-                    found.append((ln.get("MinTop", 0), m.group(2)))
-        else:
-            for i, m in enumerate(FRAC.finditer(text)):
-                found.append((i, m.group(2)))
-        found.sort(key=lambda t: t[0])
-
         def norm(t):
             t = t.strip().replace(',', '.')
             return re.sub(r'(\d)\s*([KMB])$', r'\1 \2', t, flags=re.IGNORECASE).upper()
 
-        return [norm(t) for _, t in found][-3:]
+        # Split the text into the three cards by their headers
+        def section(start, end):
+            s = re.search(start, text, re.IGNORECASE)
+            if not s:
+                return ""
+            rest = text[s.end():]
+            if end:
+                e = re.search(end, rest, re.IGNORECASE)
+                if e:
+                    return rest[:e.start()]
+            return rest
+
+        ofa_txt = section(r'One\s*for\s*All', r'Do\s*Your\s*Part')
+        dyp_txt = section(r'Do\s*Your\s*Part', r'Joint\s*Effort')
+        je_txt = section(r'Joint\s*Effort', r'COMPLETE')
+
+        def target_from(sec, kind):
+            # 1) Prefer an explicit a/b fraction
+            m = FRAC.search(sec)
+            if m:
+                return norm(m.group(2))
+            # 2) Fall back to the number in the description text
+            if kind == "ofa":
+                m = re.search(r'(?:craft|collect|hatch|breed|feed|rank up|level up|win|defeat)\s+(\d+(?:[.,]\d+)?\s*[KMB]?)', sec, re.IGNORECASE)
+            elif kind == "dyp":
+                m = re.search(r'(\d+)\s+members', sec, re.IGNORECASE)
+            else:  # je
+                m = re.search(r'(?:craft|collect|hatch|breed|feed|rank up|level up|win|defeat|with|up)\s+(\d+(?:[.,]\d+)?\s*[KMB]?)', sec, re.IGNORECASE)
+            return norm(m.group(1)) if m else None
+
+        ofa = target_from(ofa_txt, "ofa")
+        dyp = target_from(dyp_txt, "dyp")
+        je = target_from(je_txt, "je")
+        print(f"[OCR] parsed -> OFA={ofa} DYP={dyp} JE={je}", flush=True)
+
+        if ofa and dyp and je:
+            return [ofa, dyp, je]
+        return None
 
     async def parse_ocr_screenshot(self, attachment):
         try:

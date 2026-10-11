@@ -40,6 +40,58 @@ class RaceManager(commands.Cog):
     def cog_unload(self):
         self.reminder_loop.cancel()
 
+    async def _run_ocr(self, jpg_bytes, engine):
+        form = aiohttp.FormData()
+        form.add_field('file', jpg_bytes, filename='q.jpg', content_type='image/jpeg')
+        form.add_field('language', 'eng')
+        form.add_field('isOverlayRequired', 'true')
+        form.add_field('scale', 'true')
+        form.add_field('OCREngine', str(engine))
+        headers = {'apikey': config.OCR_API_KEY}
+
+        try:
+            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as s:
+                async with s.post('https://api.ocr.space/parse/image',
+                                  data=form, headers=headers) as resp:
+                    data = await resp.json(content_type=None)
+        except Exception as e:
+            print(f"[OCR Error] engine {engine}: {e}", flush=True)
+            return None
+
+        if data.get("IsErroredOnProcessing"):
+            print(f"[OCR Error] API: {data.get('ErrorMessage')}", flush=True)
+            return None
+
+        res = (data.get("ParsedResults") or [{}])[0]
+        text = res.get("ParsedText", "")
+        lines = (res.get("TextOverlay") or {}).get("Lines") or []
+        print(f"[OCR Raw] engine {engine}: {text!r}", flush=True)
+        if not text:
+            print(f"[OCR] empty result, exit code: {res.get('FileParseExitCode')}, "
+                  f"msg: {res.get('ErrorMessage')}", flush=True)
+
+        # Better regex that accounts for OCR misreading '/' as '|' or '\'
+        FRAC = re.compile(
+            r'(\d+(?:[.,]\d+)?(?:\s*[KMB]\b)?)\s*[/|\\]\s*(\d+(?:[.,]\d+)?(?:\s*[KMB]\b)?)',
+            re.IGNORECASE
+        )
+
+        found = []
+        if lines:
+            for ln in lines:
+                for m in FRAC.finditer(ln.get("LineText", "")):
+                    found.append((ln.get("MinTop", 0), m.group(2)))
+        else:
+            for i, m in enumerate(FRAC.finditer(text)):
+                found.append((i, m.group(2)))
+        found.sort(key=lambda t: t[0])
+
+        def norm(t):
+            t = t.strip().replace(',', '.')
+            return re.sub(r'(\d)\s*([KMB])$', r'\1 \2', t, flags=re.IGNORECASE).upper()
+
+        return [norm(t) for _, t in found][-3:]
+
     async def parse_ocr_screenshot(self, attachment):
         try:
             async with aiohttp.ClientSession() as session:
@@ -56,82 +108,28 @@ class RaceManager(commands.Cog):
                                 width, int(height * 0.93)))
 
             img = img.resize((int(img.width * 1.5), int(img.height * 1.5)), Image.LANCZOS)
-            img_enhanced = ImageOps.autocontrast(img.convert('L'))
+            buf = io.BytesIO()
+            img.convert('RGB').save(buf, format='JPEG', quality=90)   # keep colour
+            jpg_bytes = buf.getvalue()
+            print(f"[OCR] upload size: {len(jpg_bytes) / 1024:.0f} KB", flush=True)
 
-            output_buffer = io.BytesIO()
-            img_enhanced.save(output_buffer, format='JPEG', quality=85)
-            output_buffer.seek(0)
-            print(f"[OCR] upload size: {output_buffer.getbuffer().nbytes / 1024:.0f} KB")
+            for engine in (2, 1):
+                targets = await self._run_ocr(jpg_bytes, engine)
+                print(f"[OCR] engine {engine} targets: {targets}", flush=True)
+                if targets and len(targets) == 3:
+                    ofa, dyp, je = targets
+                    try:
+                        dyp = int(dyp)
+                    except ValueError:
+                        continue
+                    return {"ofa_target": ofa, "dyp_target": dyp, "je_target": je}
+            return None
 
-            payload = {
-                'language': 'eng',
-                'isOverlayRequired': True,
-                'isTable': False,
-                'OCREngine': 2
-            }
-            headers = {'apikey': config.OCR_API_KEY}
-
-            form = aiohttp.FormData()
-            form.add_field('file', output_buffer, filename='cropped.jpg', content_type='image/jpeg')
-            for key, value in payload.items():
-                form.add_field(key, str(value))
-
-            async with aiohttp.ClientSession(timeout=aiohttp.ClientTimeout(total=30)) as session:
-                async with session.post('https://api.ocr.space/parse/image', data=form, headers=headers) as resp:
-                    data = await resp.json(content_type=None)
-
-            if data.get("IsErroredOnProcessing"):
-                print(f"[OCR Error] API: {data.get('ErrorMessage')}")
-                return None
-
-            results = data.get("ParsedResults") or [{}]
-            text = results[0].get("ParsedText", "")
-            lines = (results[0].get("TextOverlay") or {}).get("Lines") or []
-            print(f"[OCR Raw] {text!r}")
-
-            FRAC = re.compile(
-                r'(\d+(?:[.,]\d+)?(?:\s*[KMB]\b)?)\s*/\s*(\d+(?:[.,]\d+)?(?:\s*[KMB]\b)?)',
-                re.IGNORECASE
-            )
-
-            found = []
-            if lines:
-                for ln in lines:
-                    top = ln.get("MinTop", 0)
-                    for m in FRAC.finditer(ln.get("LineText", "")):
-                        found.append((top, m.group(2)))
-            else:
-                for i, m in enumerate(FRAC.finditer(text)):
-                    found.append((i, m.group(2)))
-
-            found.sort(key=lambda t: t[0])
-            print(f"[OCR] fractions found: {found}")
-
-            def norm(t):
-                t = t.strip().replace(',', '.')
-                return re.sub(r'(\d)\s*([KMB])$', r'\1 \2', t, flags=re.IGNORECASE).upper()
-
-            targets = [norm(t) for _, t in found][-3:]
-
-            ofa_target = dyp_target = je_target = None
-            if len(targets) == 3:
-                ofa_target = targets[0]
-                je_target = targets[2]
-                try:
-                    dyp_target = int(targets[1])
-                except ValueError:
-                    dyp_target = None
-
-            return {
-                "ofa_target": ofa_target,
-                "dyp_target": dyp_target,
-                "je_target": je_target
-            }
         except asyncio.TimeoutError:
-            print("[OCR Error] Timeout")
+            print("[OCR Error] Timeout", flush=True)
             return None
         except Exception as e:
-            print(f"[OCR Error] {e}")
+            print(f"[OCR Error] {e}", flush=True)
             return None
 
     @commands.command(name="race")
@@ -146,7 +144,6 @@ class RaceManager(commands.Cog):
                 await ctx.send("⏸️ The race event is currently disabled by staff.")
                 return
 
-        # Allow `!race status` as an alias for `!race`
         if action is None or action == "status":
             embed = discord.Embed(title="🏁 Current Race Node Status", color=discord.Color.blue())
             embed.add_field(name="Node", value=f"**Lap {state['lap']}.{state['node']}**", inline=False)
@@ -160,7 +157,6 @@ class RaceManager(commands.Cog):
                 ofa_status = "Available ✅"
             embed.add_field(name="One For All (OFA)", value=ofa_status, inline=False)
             
-            # Updated DYP status to show Completed emoji
             dyp_status = "✅ Completed" if state['dyp_progress'] >= state['dyp_target'] else f"{state['dyp_progress']}/{state['dyp_target']} contributions"
             embed.add_field(name="Do Your Part (DYP)", value=dyp_status, inline=True)
             
@@ -258,7 +254,6 @@ class RaceManager(commands.Cog):
                 await ctx.send(f"⏳ An OFA claim for <@{pending['user_id']}> is already pending approval.")
                 return
             
-            # NEW: Get channel-specific ping roles
             ping_roles = config.OFA_PING_ROLES.get(ctx.channel.id, [])
             role_pings = " ".join([f"<@&{rid}>" for rid in ping_roles])
             

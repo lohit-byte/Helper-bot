@@ -27,7 +27,14 @@ def format_amount(v):
 
 # --- Flexible Node Argument Parser ---
 NUM = re.compile(r'(?<![\w.])\d+(?:[.,]\d+)?', re.IGNORECASE)
+# Updated regex to recognise full words like "billion, "million", "thousand"
 CHUNK = re.compile(r'(\d+(?:[.,]\d+)?)\s*(?:([KMB])(?![A-Za-z]))?\s*(.*)', re.IGNORECASE | re.DOTALL)
+
+SUFFIX_MAP = {
+    'k' : 'K', 'thousand' : 'K'
+    'm' : 'M', 'million' : 'M'
+    'b' : 'B', 'billion' : 'B'
+}
 
 def parse_node_args(args):
     """'53hatch 13breed 5craft gold relics' -> targets + descriptions.

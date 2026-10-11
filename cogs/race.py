@@ -25,6 +25,36 @@ def format_amount(v):
     return f"{round(v, 2):g}"
 
 
+# --- Flexible Node Argument Parser ---
+NUM = re.compile(r'(?<![\w.])\d+(?:[.,]\d+)?', re.IGNORECASE)
+CHUNK = re.compile(r'(\d+(?:[.,]\d+)?)\s*(?:([KMB])(?![A-Za-z]))?\s*(.*)', re.IGNORECASE | re.DOTALL)
+
+def parse_node_args(args):
+    """'53hatch 13breed 5craft gold relics' -> targets + descriptions.
+    Also accepts 'a | b | c' to separate the three quests explicitly."""
+    if '|' in args:
+        chunks = [c.strip() for c in args.split('|')]
+        if len(chunks) != 3:
+            raise ValueError("need exactly 3 parts")
+    else:
+        ms = list(NUM.finditer(args))
+        if len(ms) < 3:
+            raise ValueError("need 3 numbers")
+        starts = [m.start() for m in ms[:3]]
+        ends = starts[1:] + [len(args)]
+        chunks = [args[s:e].strip() for s, e in zip(starts, ends)]
+
+    out = []
+    for c in chunks:
+        m = CHUNK.match(c)
+        if not m:
+            raise ValueError(f"can't read: {c}")
+        num = m.group(1).replace(',', '.')
+        suffix = (m.group(2) or '').upper()
+        out.append((f"{num} {suffix}".strip(), m.group(3).strip()))
+    return out  # [(ofa_target, ofa_desc), (dyp_target, dyp_desc), (je_target, je_desc)]
+
+
 def is_race_channel():
     async def predicate(ctx):
         return ctx.channel.id in config.RACE_CHANNELS
@@ -78,34 +108,36 @@ class RaceManager(commands.Cog):
             if not is_admin:
                 await ctx.send("❌ Staff only.")
                 return
-                
+
+            usage = ("❌ Usage: `!race newnode 53 hatch 13 breed 5 craft gold relics`\n"
+                     "Also works: `53hatch 13breed 5craft gold relics` or "
+                     "`24.4M collect gold | 10 rank up | 5.29M feed`")
             if not args:
-                await ctx.send("❌ Usage: `!race newnode <OFA> <DYP> <JE> [Task Description]`\nExample: `!race newnode 24.4M 10 5.29M Collect Gold`")
+                await ctx.send(usage)
                 return
-            
-            parts = args.split(maxsplit=3)
-            if len(parts) < 3:
-                await ctx.send("❌ You must provide at least OFA, DYP, and JE targets.")
-                return
-            
-            ofa_target = parts[0]
             try:
-                dyp_target = int(parts[1])
+                (ofa_target, ofa_desc), (dyp_raw, dyp_desc), (je_target, je_desc) = parse_node_args(args)
+                dyp_target = int(dyp_raw)
+                if dyp_target < 1:
+                    raise ValueError
             except ValueError:
-                await ctx.send("❌ DYP target must be a positive integer.")
+                await ctx.send(usage)
                 return
-            je_target = parts[2]
-            task_desc = parts[3] if len(parts) > 3 else "Race Task"
+
+            task_desc = "\n".join(
+                f"**{label}:** {d}" for label, d in
+                (("OFA", ofa_desc), ("DYP", dyp_desc), ("JE", je_desc)) if d
+            ) or "Race Task"
 
             new_node = state['node'] + 1
             new_lap = state['lap']
             if new_node > config.NODES_PER_LAP:
                 new_node = 1
                 new_lap += 1
-                
+
             db.clear_pending_ofa_for_channel(ctx.channel.id)
             db.reset_dyp_contributors(ctx.channel.id)
-                
+
             db.update_state(
                 ctx.channel.id,
                 lap=new_lap, node=new_node,
@@ -115,8 +147,9 @@ class RaceManager(commands.Cog):
                 task_desc=task_desc
             )
             await ctx.send(f"✅ Node initialized: **Lap {new_lap}.{new_node}**\n"
-                           f"Task: `{task_desc}`\n"
-                           f"OFA: `{ofa_target}` | DYP: `{dyp_target}` | JE: `{je_target}`")
+                           f"**OFA:** `{ofa_target}` {ofa_desc}\n"
+                           f"**DYP:** `{dyp_target}` {dyp_desc}\n"
+                           f"**JE:** `{je_target}` {je_desc}")
 
         elif action == "set":
             if not is_admin:
@@ -221,7 +254,7 @@ class RaceManager(commands.Cog):
                     await ctx.send("❌ Staff only for JE skip.")
                     return
                 db.update_state(ctx.channel.id, je_done=1)
-                await ctx.send("⏭️ **Joint Effort (JE) skipped!** Waiting for `!race newnode` screenshot.")
+                await ctx.send("⏭️ **Joint Effort (JE) skipped!** Waiting for `!race newnode` command.")
 
             elif args and args.lower() == "done":
                 if state['je_done']:

@@ -131,27 +131,46 @@ class RaceManager(commands.Cog):
 
             img = Image.open(io.BytesIO(image_bytes))
             width, height = img.size
+            print(f"[OCR] original image {width}x{height}", flush=True)
 
+            # Full game screenshot -> crop the quest panel
             if width / height > 1.3:
                 img = img.crop((int(width * 0.64), int(height * 0.22),
                                 width, int(height * 0.93)))
 
-            img = img.resize((int(img.width * 1.5), int(img.height * 1.5)), Image.LANCZOS)
-            buf = io.BytesIO()
-            img.convert('RGB').save(buf, format='JPEG', quality=90)   # keep colour
-            jpg_bytes = buf.getvalue()
-            print(f"[OCR] upload size: {len(jpg_bytes) / 1024:.0f} KB", flush=True)
+            print(f"[OCR] image {width}x{height}, after crop {img.size}", flush=True)
+            try:
+                img.save("/tmp/ocr_crop.png")
+            except Exception:
+                pass
 
-            for engine in (2, 1):
-                targets = await self._run_ocr(jpg_bytes, engine)
-                print(f"[OCR] engine {engine} targets: {targets}", flush=True)
-                if targets and len(targets) == 3:
-                    ofa, dyp, je = targets
-                    try:
-                        dyp = int(dyp)
-                    except ValueError:
-                        continue
-                    return {"ofa_target": ofa, "dyp_target": dyp, "je_target": je}
+            def to_jpg(im, scale):
+                im = im.resize((int(im.width * scale), int(im.height * scale)), Image.LANCZOS)
+                b = io.BytesIO()
+                im.convert('RGB').save(b, format='JPEG', quality=92)
+                return b.getvalue()
+
+            # Variants: (name, image). Tried in order until one parses all 3 cards.
+            variants = []
+            w, h = img.size
+            variants.append(("colour-2x", img))
+            variants.append(("gray-contrast", ImageOps.autocontrast(img.convert('L'))))
+            variants.append(("inverted", ImageOps.invert(ImageOps.autocontrast(img.convert('L')))))
+            variants.append(("cards-only", img.crop((0, int(h * 0.12), w, int(h * 0.88)))))
+
+            for name, im in variants:
+                jpg = to_jpg(im, 2.0)
+                print(f"[OCR] variant {name}: {len(jpg) / 1024:.0f} KB", flush=True)
+                for engine in (2, 1):
+                    targets = await self._run_ocr(jpg, engine)
+                    print(f"[OCR] {name} engine {engine} targets: {targets}", flush=True)
+                    if targets and len(targets) == 3:
+                        ofa, dyp, je = targets
+                        try:
+                            dyp = int(dyp)
+                        except ValueError:
+                            continue
+                        return {"ofa_target": ofa, "dyp_target": dyp, "je_target": je}
             return None
 
         except asyncio.TimeoutError:

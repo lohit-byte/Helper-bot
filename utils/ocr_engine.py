@@ -9,8 +9,8 @@ async def process_race_image(image_bytes):
         img = Image.open(io.BytesIO(image_bytes))
         w, h = img.size
         
-        # Crop the right side (Quest Panel)
-        img = img.crop((int(w * 0.65), 0, w, h))
+        # FIX 1: Crop adjusted to 0.55 to handle wider screens (like iPads)
+        img = img.crop((int(w * 0.55), 0, w, h))
         
         buf = io.BytesIO()
         img.convert('RGB').save(buf, format='JPEG', quality=90)
@@ -42,56 +42,79 @@ async def process_race_image(image_bytes):
         if not lines:
             return None
 
+        # FIX 2: Fuzzy Header Matching (handles OCR reading 'One' as '0ne')
         headers_y = {}
         for ln in lines:
             text = ln.get("LineText", "").lower()
-            if "one for all" in text: headers_y["ofa"] = ln.get("MinTop")
-            elif "do your part" in text: headers_y["dyp"] = ln.get("MinTop")
-            elif "joint effort" in text: headers_y["je"] = ln.get("MinTop")
+            if "for all" in text or "one for" in text: headers_y["ofa"] = ln.get("MinTop")
+            elif "your part" in text or "do your" in text: headers_y["dyp"] = ln.get("MinTop")
+            elif "joint" in text or "effort" in text: headers_y["je"] = ln.get("MinTop")
 
         if len(headers_y) != 3:
+            print("[OCR] Could not find all 3 headers.")
             return None
 
         sorted_h = sorted(headers_y.items(), key=lambda x: x[1])
-        FRAC = re.compile(r'(\d+(?:[.,]\d+)?(?:\s*[KMB]\b)?)\s*[/|\\]\s*(\d+(?:[.,]\d+)?(?:\s*[KMB]\b)?)', re.IGNORECASE)
-        
-        fractions = []
-        for ln in lines:
-            for m in FRAC.finditer(ln.get("LineText", "")):
-                fractions.append({
-                    "y": ln.get("MinTop"),
-                    "target": m.group(2).replace(',', '.').upper()
-                })
 
+        # FIX 3: Fraction Blocking (prevents two headers from grabbing the same fraction)
+        # Handles O/13 instead of 0/13
+        FRAC = re.compile(r'([\dOo]+(?:[.,]\d+)?(?:\s*[KMB]\b)?)\s*[/|\\]\s*(\d+(?:[.,]\d+)?(?:\s*[KMB]\b)?)', re.IGNORECASE)
+        bounds = [y for _, y in sorted_h] + [10**9]
         targets = {}
-        for key, h_y in sorted_h:
-            if not fractions: break
-            best_match = min(fractions, key=lambda f: abs(f["y"] - h_y))
-            targets[key] = best_match["target"]
-
-        full_text = res.get("ParsedText", "").lower()
         
-        def extract_task(default_task):
-            if "collect" in full_text and "gold" in full_text: return "Collect Gold"
-            if "collect" in full_text and "food" in full_text: return "Collect Food"
-            if "hatch" in full_text: return "Hatch Monsters"
-            if "breed" in full_text: return "Breed Monsters"
-            if "rank up" in full_text: return "Rank Up Monsters"
-            if "level up" in full_text and "relic" in full_text: 
-                color = "Gold" if "gold relic" in full_text else ("Silver" if "silver relic" in full_text else "")
-                return f"Level up {color} Relics"
-            if "craft" in full_text: return "Craft Runes/Relics"
-            if "win" in full_text: return "Win Battles"
-            if "feed" in full_text: return "Feed Food"
+        for i, (key, h_y) in enumerate(sorted_h):
+            cands = []
+            for ln in lines:
+                top = ln.get("MinTop", 0)
+                # Only look for fractions vertically between this header and the next
+                if h_y <= top < bounds[i + 1]:
+                    for m in FRAC.finditer(ln.get("LineText", "")):
+                        cands.append((top, m.group(2).replace(',', '.').upper()))
+            if cands:
+                targets[key] = min(cands)[1] # Get the top-most fraction in this block
+
+        # Helper to get text between two Y-coordinates
+        def get_task_text(start_y, end_y=None):
+            text = ""
+            for ln in lines:
+                if start_y <= ln.get("MinTop", 0) and (end_y is None or ln.get("MinTop", 0) < end_y):
+                    text += ln.get("LineText", "") + " "
+            return text.lower()
+
+        y_ofa = headers_y["ofa"]
+        y_dyp = headers_y["dyp"]
+        y_je = headers_y["je"]
+
+        ofa_text = get_task_text(y_ofa, y_dyp)
+        dyp_text = get_task_text(y_dyp, y_je)
+        je_text = get_task_text(y_je)
+
+        def extract_task(text_block, default_task):
+            if "collect" in text_block and "gold" in text_block: return "Collect Gold"
+            if "collect" in text_block and "food" in text_block: return "Collect Food"
+            if "hatch" in text_block: return "Hatch Monsters"
+            if "breed" in text_block: return "Breed Monsters"
+            if "rank up" in text_block: return "Rank Up Monsters"
+            if "level up" in text_block and "relic" in text_block: 
+                color = "Gold" if "gold relic" in text_block else ("Silver" if "silver relic" in text_block else "")
+                return f"Level Up {color} Relics"
+            
+            # FIX 4: Extract Rune Levels (e.g., "Level 3 Rune")
+            if "craft" in text_block:
+                lv = re.search(r'level\s*(\d+)\s*rune', text_block)
+                return f"Craft Level {lv.group(1)} Runes" if lv else "Craft Runes/Relics"
+                
+            if "win" in text_block: return "Win Battles"
+            if "feed" in text_block: return "Feed Food"
             return default_task
 
         def norm(t):
             return re.sub(r'(\d)\s*([KMB])$', r'\1 \2', t)
 
         return {
-            "ofa": {"target": norm(targets.get("ofa", "Unknown")), "task": extract_task("Race Task")},
-            "dyp": {"target": int(float(re.sub(r'[^\d.]', '', targets.get("dyp", "0")))), "task": extract_task("Race Task")},
-            "je":  {"target": norm(targets.get("je", "Unknown")), "task": extract_task("Race Task")}
+            "ofa": {"target": norm(targets.get("ofa", "Unknown")), "task": extract_task(ofa_text, "Race Task")},
+            "dyp": {"target": int(float(re.sub(r'[^\d.]', '', targets.get("dyp", "0")))), "task": extract_task(dyp_text, "Race Task")},
+            "je":  {"target": norm(targets.get("je", "Unknown")), "task": extract_task(je_text, "Race Task")}
         }
 
     except Exception as e:

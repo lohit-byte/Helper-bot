@@ -2,6 +2,7 @@ import discord
 from discord.ext import commands, tasks
 import re
 import time
+import datetime
 import config
 from utils.database import db
 from utils.ocr_engine import process_race_image
@@ -57,15 +58,45 @@ class RaceManager(commands.Cog):
     async def get_dyp_pending_pings(self, channel, state):
         if state['dyp_progress'] >= state['dyp_target']: return ""
         
-        role_id = config.LC_MEMBERS if channel.id == config.LC_CHANNEL else config.FBW_MEMBERS
+        # Fix: Use TESTER_ROLE if in the test channel
+        if channel.id == config.LC_CHANNEL:
+            role_id = config.LC_MEMBERS
+        elif channel.id == config.FBW_CHANNEL:
+            role_id = config.FBW_MEMBERS
+        else:
+            role_id = config.TESTER_ROLE
+
         role = channel.guild.get_role(role_id)
-        if not role: return ""
+        if not role: 
+            return ""
 
         contributors = db.get_dyp_contributors(channel.id)
         mentions = []
+        
+        # Get current UTC time
+        utc_now = datetime.datetime.now(datetime.timezone.utc)
+        utc_hour = utc_now.hour + (utc_now.minute / 60.0)
+
         for member in role.members:
-            if member.bot or member.id in contributors or db.is_user_muted(member.id): continue
+            if member.bot: continue
+            if member.id in contributors: continue
+            if db.is_user_muted(member.id): continue
+
+            # --- TIMEZONE SLEEP CHECK ---
+            user_offset = None
+            for tz_role_id, offset in config.TIMEZONE_ROLES.items():
+                if any(r.id == tz_role_id for r in member.roles):
+                    user_offset = offset
+                    break
+            
+            if user_offset is not None:
+                local_hour = (utc_hour + user_offset) % 24
+                # Sleep window: 11:00 PM (23.0) to 8:00 AM (8.0)
+                if local_hour >= 23.0 or local_hour < 8.0:
+                    continue # Skip this user, they are sleeping
+
             mentions.append(member.mention)
+            
         return " ".join(mentions)
 
     async def send_dyp_ping(self, channel, state):
@@ -113,7 +144,6 @@ class RaceManager(commands.Cog):
                 return
 
         if action is None or action == "status":
-            # ... (Status embed logic remains the same) ...
             embed = discord.Embed(title="🏁 Current Race Node Status", color=discord.Color.blue())
             embed.add_field(name="Node", value=f"**Lap {state['lap']}.{state['node']}**", inline=False)
             embed.add_field(name="Tasks", value=state['task_desc'], inline=False)
@@ -149,7 +179,6 @@ class RaceManager(commands.Cog):
         if action == "newnode":
             if not is_admin: return
 
-            # 1. CHECK IF AN IMAGE WAS ATTACHED
             if ctx.message.attachments:
                 await ctx.send("🔍 Scanning attached image...")
                 ocr_data = await process_race_image(await ctx.message.attachments[0].read())
@@ -158,21 +187,19 @@ class RaceManager(commands.Cog):
                     await self.setup_node(ctx, state, ocr_data['ofa']['target'], ocr_data['dyp']['target'], ocr_data['je']['target'], desc)
                     return
                 else:
-                    await ctx.send("⚠️ OCR failed. Use manual input: `!race newnode 53 hatch | 13 breed | 5 craft gold relics`")
+                    await ctx.send("⚠️ OCR failed. Use manual input.")
 
-            # 2. CHECK IF MANUAL TEXT WAS PROVIDED
             if args:
                 try:
                     (ofa_t, ofa_d), (dyp_r, dyp_d), (je_t, je_d) = parse_node_args(args)
                     desc = f"OFA: {ofa_d} | DYP: {dyp_d} | JE: {je_d}"
                     await self.setup_node(ctx, state, ofa_t, int(dyp_r), je_t, desc)
                 except ValueError:
-                    await ctx.send("❌ Invalid format. Use `!race newnode 53 hatch | 13 breed | 5 craft gold relics`")
+                    await ctx.send("❌ Invalid format. Use `!race newnode 53 hatch | 13 breed | 5 craft`")
             else:
                 await ctx.send("❌ Please attach an image or provide text.")
 
         elif action == "set":
-            # ... (set logic)
             if not is_admin: return
             parts = args.split(maxsplit=1)
             if parts[0].lower() == "desc":
@@ -190,7 +217,6 @@ class RaceManager(commands.Cog):
                     await ctx.send(f"✅ JE target set to {parts[1]}.")
 
         elif action == "ofa":
-            # ... (OFA logic)
             if args and args.lower() == "done":
                 if not state['ofa_holder'] or (ctx.author.id != state['ofa_holder'] and not is_admin): return
                 db.update_state(ctx.channel.id, ofa_done=1)
@@ -204,7 +230,6 @@ class RaceManager(commands.Cog):
             db.add_pending_ofa(msg.id, ctx.channel.id, ctx.author.id)
 
         elif action == "dyp":
-            # ... (DYP logic)
             if args and args.lower() == "skip":
                 if not is_admin: return
                 db.update_state(ctx.channel.id, dyp_progress=state['dyp_target'])
@@ -214,10 +239,16 @@ class RaceManager(commands.Cog):
                 amount = 1 if args.lower() == "done" else int(parse_amount(args[1:]))
                 new_progress = min(state['dyp_progress'] + amount, state['dyp_target'])
                 db.update_state(ctx.channel.id, dyp_progress=new_progress)
-                await ctx.send(f"✅ DYP logged. Pending: `{new_progress}/{state['dyp_target']}`")
+                
+                # FIX: Mark the author as a contributor so they don't get pinged
+                db.increment_dyp(ctx.channel.id, ctx.author.id)
+                
+                if new_progress >= state['dyp_target']:
+                    await ctx.send(f"🎉 **DYP Target Reached!** ({new_progress}/{state['dyp_target']})")
+                else:
+                    await ctx.send(f"✅ DYP logged. Pending: `{new_progress}/{state['dyp_target']}`")
 
         elif action == "je":
-            # ... (JE logic)
             if args and args.lower() == "skip":
                 if not is_admin: return
                 db.update_state(ctx.channel.id, je_done=1)
@@ -272,10 +303,7 @@ class RaceManager(commands.Cog):
     @is_race_channel()
     async def ignore(self, ctx, time_str: str):
         match = re.fullmatch(r"(\d+)([mh])", time_str.lower())
-        if not match:
-            await ctx.send("❌ Invalid format. Use `!ignore 1h` or `!ignore 30m`.")
-            return
-        
+        if not match: return await ctx.send("❌ Invalid format. Use `!ignore 1h`.")
         amount, unit = int(match.group(1)), match.group(2)
         seconds = amount * 60 if unit == 'm' else amount * 3600
         db.add_user_mute(ctx.author.id, seconds)
@@ -289,7 +317,6 @@ class RaceManager(commands.Cog):
 
     @tasks.loop(minutes=15)
     async def reminder_loop(self):
-        current_time = time.time()
         for channel_id in config.RACE_CHANNELS:
             state = db.get_state(channel_id)
             if not state['event_active']: continue

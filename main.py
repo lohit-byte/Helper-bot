@@ -4,7 +4,6 @@ import config
 import asyncio
 import traceback
 
-# ⚠️ Ensure Server Members Intent is enabled in the Discord Developer Portal
 intents = discord.Intents.default()
 intents.message_content = True
 intents.members = True
@@ -33,26 +32,16 @@ async def on_command_error(ctx, error):
     elif isinstance(error, commands.CommandNotFound):
         pass
     else:
-        # Print full traceback for debugging
         traceback.print_exception(type(error), error, error.__traceback__)
-        await ctx.send("⚠️ An unexpected error occurred. Check logs for details.")
+        await ctx.send("⚠️ An unexpected error occurred.")
 
 async def main():
     async with bot:
-        # ONLY load the Info, Race, and Admin modules to prevent clashing with your warbot
-        cogs_to_load = [
-            "cogs.race",
-            "cogs.admin",
-            "cogs.wiki.cog"
-        ]
-        for ext in cogs_to_load:
-            try:
-                await bot.load_extension(ext)
-                print(f"Loaded {ext}")
-            except Exception as e:
-                print(f"❌ Failed to load {ext}: {e}")
-                traceback.print_exc()
-                
+        # Load the grouped race system
+        await bot.load_extension("cogs.race_system")
+        # Load the wiki system
+        await bot.load_extension("cogs.wiki.cog")
+        
         await bot.start(config.TOKEN)
 
 if __name__ == "__main__":

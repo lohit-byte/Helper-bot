@@ -1,5 +1,6 @@
 import sqlite3
 import os
+import time
 
 class Database:
     def __init__(self, db_path=None):
@@ -42,7 +43,14 @@ class Database:
                 PRIMARY KEY (channel_id, user_id)
             )
         """)
-        # Add missing columns to existing tables
+        # NEW: Table for per-user mutes
+        self.cursor.execute("""
+            CREATE TABLE IF NOT EXISTS user_mutes (
+                user_id INTEGER PRIMARY KEY,
+                unignore_time REAL
+            )
+        """)
+        
         for col, dtype, default in [
             ("event_active", "BOOLEAN", "0"),
             ("ofa_done", "BOOLEAN", "0"),
@@ -102,6 +110,10 @@ class Database:
         self.cursor.execute("DELETE FROM dyp_contributors WHERE channel_id = ?", (channel_id,))
         self.conn.commit()
 
+    def get_dyp_contributors(self, channel_id):
+        self.cursor.execute("SELECT user_id FROM dyp_contributors WHERE channel_id = ?", (channel_id,))
+        return [row[0] for row in self.cursor.fetchall()]
+
     def add_pending_ofa(self, message_id, channel_id, user_id):
         self.cursor.execute("INSERT INTO pending_ofa (message_id, channel_id, user_id) VALUES (?, ?, ?)", (message_id, channel_id, user_id))
         self.conn.commit()
@@ -123,5 +135,25 @@ class Database:
     def clear_pending_ofa_for_channel(self, channel_id):
         self.cursor.execute("DELETE FROM pending_ofa WHERE channel_id = ?", (channel_id,))
         self.conn.commit()
+
+    # --- NEW: User Mutes ---
+    def add_user_mute(self, user_id, duration_seconds):
+        unignore_time = time.time() + duration_seconds
+        self.cursor.execute("INSERT OR REPLACE INTO user_mutes (user_id, unignore_time) VALUES (?, ?)", (user_id, unignore_time))
+        self.conn.commit()
+
+    def remove_user_mute(self, user_id):
+        self.cursor.execute("DELETE FROM user_mutes WHERE user_id = ?", (user_id,))
+        self.conn.commit()
+
+    def is_user_muted(self, user_id):
+        self.cursor.execute("SELECT unignore_time FROM user_mutes WHERE user_id = ?", (user_id,))
+        row = self.cursor.fetchone()
+        if row:
+            if time.time() < row[0]:
+                return True
+            else:
+                self.remove_user_mute(user_id)
+        return False
 
 db = Database()

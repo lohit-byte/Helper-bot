@@ -66,8 +66,8 @@ class Admin(commands.Cog):
             lap=0, node=0, 
             ofa_holder=None, ofa_target=None, ofa_done=0, 
             dyp_progress=0, dyp_target=0, 
-            je_progress="0", je_target="4", je_done=0, 
-            task_desc="Race Task"
+            je_progress="0", je_target="0", je_done=0, 
+            task_desc="No Active Node"
         )
         db.clear_pending_ofa_for_channel(ctx.channel.id)
         db.reset_dyp_contributors(ctx.channel.id)

@@ -5,7 +5,6 @@ import discord
 from discord.ext import commands, tasks
 import re
 import time
-import datetime
 import os
 import json
 import config
@@ -78,23 +77,11 @@ class RaceManager(commands.Cog):
 
         contributors = db.get_dyp_contributors(channel.id)
         mentions = []
-        
-        utc_now = datetime.datetime.now(datetime.timezone.utc)
-        utc_hour = utc_now.hour + (utc_now.minute / 60.0)
 
         for member in role.members:
-            if member.bot or member.id in contributors or db.is_user_muted(member.id): continue
-
-            user_offset = None
-            for tz_role_id, offset in config.TIMEZONE_ROLES.items():
-                if any(r.id == tz_role_id for r in member.roles):
-                    user_offset = offset
-                    break
-            
-            if user_offset is not None:
-                local_hour = (utc_hour + user_offset) % 24
-                if local_hour >= 23.0 or local_hour < 8.0:
-                    continue 
+            if member.bot: continue
+            if member.id in contributors: continue
+            if db.is_user_muted(member.id): continue # Only checks !ignore now
 
             mentions.append(member.mention)
             if len(mentions) >= needed:
@@ -181,7 +168,6 @@ class RaceManager(commands.Cog):
             embed.add_field(name="Node", value=f"**Lap {state['lap']}.{state['node']}**", inline=False)
             embed.add_field(name="Tasks", value=state['task_desc'], inline=False)
             
-            # Handle empty states gracefully
             if state['task_desc'] == "No Active Node":
                 embed.add_field(name="One For All (OFA)", value="Not Set ⏳", inline=False)
                 embed.add_field(name="Do Your Part (DYP)", value="Not Set ⏳", inline=True)
@@ -204,7 +190,7 @@ class RaceManager(commands.Cog):
             await ctx.send(embed=embed)
             return
 
-        # 2. CLEAR (Wipes current node only, keeps lap/node)
+        # 2. CLEAR
         if action == "clear":
             if not is_admin: return
             db.update_state(

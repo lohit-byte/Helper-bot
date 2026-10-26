@@ -60,6 +60,9 @@ class RaceManager(commands.Cog):
     async def get_dyp_pending_pings(self, channel, state):
         if state['dyp_progress'] >= state['dyp_target']: return ""
         
+        # Only ping the exact number of people needed
+        needed = state['dyp_target'] - state['dyp_progress']
+        
         if channel.id == config.LC_CHANNEL: role_id = config.LC_MEMBERS
         elif channel.id == config.FBW_CHANNEL: role_id = config.FBW_MEMBERS
         else: role_id = config.TESTER_ROLE
@@ -89,6 +92,10 @@ class RaceManager(commands.Cog):
 
             mentions.append(member.mention)
             
+            # Stop adding pings once we hit the needed amount
+            if len(mentions) >= needed:
+                break
+            
         return " ".join(mentions)
 
     async def send_dyp_ping(self, channel, state):
@@ -106,11 +113,6 @@ class RaceManager(commands.Cog):
 
         db.clear_pending_ofa_for_channel(ctx.channel.id)
         db.reset_dyp_contributors(ctx.channel.id)
-
-        if int(dyp_prog) > 0:
-            for i in range(int(dyp_prog)):
-                db.cursor.execute("INSERT OR IGNORE INTO dyp_contributors (channel_id, user_id) VALUES (?, ?)", (ctx.channel.id, 900000 + i))
-            db.conn.commit()
 
         db.update_state(
             ctx.channel.id,
@@ -134,6 +136,28 @@ class RaceManager(commands.Cog):
         roles = [role.mention for role in member.roles if role.name != "@everyone"]
         if not roles: return await ctx.send(f"{member.mention} has no roles.")
         await ctx.send(f"**{member.display_name}** has {len(roles)} roles:\n{', '.join(roles)}")
+
+    @commands.command(name="race_mark")
+    @commands.has_any_role(*config.ADMIN_ROLES)
+    async def mark_user(self, ctx):
+        """Silently marks users as completed for DYP without changing the total progress number."""
+        if not ctx.message.mentions:
+            return await ctx.send("❌ Please mention the users to mark (e.g., `!race_mark @User1 @User2`).")
+        
+        count = 0
+        for user in ctx.message.mentions:
+            db.cursor.execute("INSERT OR IGNORE INTO dyp_contributors (channel_id, user_id) VALUES (?, ?)", (ctx.channel.id, user.id))
+            count += 1
+        db.conn.commit()
+        await ctx.send(f"✅ Silently marked **{count}** users as completed for DYP. They will not be pinged.")
+
+    @commands.command(name="race_mute")
+    @commands.has_any_role(*config.ADMIN_ROLES)
+    async def mute_dyp(self, ctx):
+        """Forces DYP target to match current progress to stop pings for this node."""
+        state = db.get_state(ctx.channel.id)
+        db.update_state(ctx.channel.id, dyp_target=state['dyp_progress'])
+        await ctx.send("🔇 **DYP pings disabled for this node.** (Target set to current progress).")
 
     @commands.command(name="race")
     @is_race_channel()
@@ -180,7 +204,6 @@ class RaceManager(commands.Cog):
             await self.send_dyp_ping(ctx.channel, state)
             return
 
-        # --- THIS IS THE BLOCK YOU NEED TO REPLACE ---
         if action == "newnode":
             if not is_admin: return
 
@@ -240,7 +263,6 @@ class RaceManager(commands.Cog):
                     await ctx.send("⚠️ Error reading `node_sheet.json`. It might be formatted wrong.")
 
             await ctx.send("❌ Please attach an image, provide text, or ensure `node_sheet.json` is in the bot folder.")
-        # --- END OF BLOCK ---
 
         elif action == "set":
             if not is_admin: return
@@ -279,6 +301,7 @@ class RaceManager(commands.Cog):
                 await ctx.send(f"⏭️ **DYP skipped by staff!**")
                 return
                 
+            # Standard "+1" contribution
             if action == "dmp" or (args and args.lower() == "done"):
                 if db.increment_dyp(ctx.channel.id, ctx.author.id):
                     new_state = db.get_state(ctx.channel.id)
@@ -286,21 +309,32 @@ class RaceManager(commands.Cog):
                 else:
                     await ctx.send("❌ You have already contributed for this node, or the target is reached.")
                     
-            elif args and args.startswith("+"):
-                amount = int(parse_amount(args[1:]))
-                new_progress = min(state['dyp_progress'] + amount, state['dyp_target'])
+            # Add, Subtract, or Set Exact
+            elif args and (args.isdigit() or args.startswith("+") or args.startswith("-")):
+                if args.isdigit():
+                    new_progress = min(int(args), state['dyp_target'])
+                    action_text = "set to exact"
+                elif args.startswith("+"):
+                    amount = int(parse_amount(args[1:]))
+                    new_progress = min(state['dyp_progress'] + amount, state['dyp_target'])
+                    action_text = "logged"
+                elif args.startswith("-"):
+                    amount = int(parse_amount(args[1:]))
+                    new_progress = max(state['dyp_progress'] - amount, 0)
+                    action_text = "reduced"
                 
                 db.update_state(ctx.channel.id, dyp_progress=new_progress)
                 
+                # Mark author as a contributor so they don't get pinged
                 db.cursor.execute("INSERT OR IGNORE INTO dyp_contributors (channel_id, user_id) VALUES (?, ?)", (ctx.channel.id, ctx.author.id))
                 db.conn.commit()
                 
                 if new_progress >= state['dyp_target']:
                     await ctx.send(f"🎉 **DYP Target Reached!** ({new_progress}/{state['dyp_target']})")
                 else:
-                    await ctx.send(f"✅ DYP logged. Pending: `{new_progress}/{state['dyp_target']}`")
+                    await ctx.send(f"✅ DYP {action_text}. Pending: `{new_progress}/{state['dyp_target']}`")
             else:
-                await ctx.send("Usage: `!race dyp done`, `!race dmp`, or `!race dyp +X`")
+                await ctx.send("Usage: `!race dmp`, `!race dyp 11` (set exact), `!race dyp +2`, or `!race dyp -1`")
 
         elif action == "je":
             if args and args.lower() == "skip":

@@ -58,7 +58,7 @@ class Admin(commands.Cog):
         await ctx.send("🔓 OFA released. It is now available for anyone to claim.")
 
     # --- FACTORY RESET ---
-    @commands.command(name="reset")
+    @commands.command(name="reset", aliases=["race_reset"])
     @commands.has_any_role(*config.ADMIN_ROLES)
     async def reset_node(self, ctx):
         db.update_state(
@@ -71,7 +71,15 @@ class Admin(commands.Cog):
         )
         db.clear_pending_ofa_for_channel(ctx.channel.id)
         db.reset_dyp_contributors(ctx.channel.id)
-        await ctx.send("🔄 **Factory Reset:** Race completely reset to Lap 0.0. Next `!race newnode` will start Lap 0.1.")
+        
+        # Clear the JSON sheet from memory so you have to reload it fresh
+        if hasattr(self.bot, 'node_sheet'):
+            del self.bot.node_sheet
+
+        embed = discord.Embed(title="🚨 FACTORY RESET SUCCESSFUL 🚨", color=discord.Color.red())
+        embed.description = "The entire race has been wiped back to Lap 0.0.\nAll OFA, DYP, and JE data has been deleted."
+        embed.set_footer(text="You must run !loadsheet before starting the next race.")
+        await ctx.send(embed=embed)
 
     @commands.command(name="setlap")
     @commands.has_any_role(*config.ADMIN_ROLES)

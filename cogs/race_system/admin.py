@@ -1,3 +1,6 @@
+# ==========================================
+# IMPORTS
+# ==========================================
 import discord
 from discord.ext import commands
 import config
@@ -8,6 +11,10 @@ class Admin(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
 
+    # ==========================================
+    # STAFF COMMANDS
+    # ==========================================
+    
     @commands.command(name="loadsheet")
     @commands.has_any_role(*config.ADMIN_ROLES)
     async def load_sheet(self, ctx):
@@ -50,13 +57,21 @@ class Admin(commands.Cog):
         db.update_state(ctx.channel.id, ofa_holder=None, ofa_done=0)
         await ctx.send("🔓 OFA released. It is now available for anyone to claim.")
 
+    # --- FACTORY RESET ---
     @commands.command(name="reset")
     @commands.has_any_role(*config.ADMIN_ROLES)
     async def reset_node(self, ctx):
-        db.update_state(ctx.channel.id, lap=0, node=0, ofa_holder=None, ofa_target=None, ofa_done=0, dyp_progress=0, dyp_target=0, je_progress="0", je_target="4", je_done=0, task_desc="Race Task")
+        db.update_state(
+            ctx.channel.id, 
+            lap=0, node=0, 
+            ofa_holder=None, ofa_target=None, ofa_done=0, 
+            dyp_progress=0, dyp_target=0, 
+            je_progress="0", je_target="4", je_done=0, 
+            task_desc="Race Task"
+        )
         db.clear_pending_ofa_for_channel(ctx.channel.id)
         db.reset_dyp_contributors(ctx.channel.id)
-        await ctx.send("🔄 Race node fully reset. Next `!race newnode` will start Lap 0.1.")
+        await ctx.send("🔄 **Factory Reset:** Race completely reset to Lap 0.0. Next `!race newnode` will start Lap 0.1.")
 
     @commands.command(name="setlap")
     @commands.has_any_role(*config.ADMIN_ROLES)
@@ -85,6 +100,9 @@ class Admin(commands.Cog):
         db.update_state(ctx.channel.id, je_progress=state['je_target'], je_done=1)
         await ctx.send(f"🎉 **JE Target Reached via bypass! Node complete.**")
 
+    # ==========================================
+    # HELP MENU
+    # ==========================================
     @commands.command(name="help")
     async def custom_help(self, ctx):
         embed = discord.Embed(title="🤖 Monster Legends Race Bot Guide", color=discord.Color.gold())
@@ -109,11 +127,11 @@ class Admin(commands.Cog):
                   "`!race_mute` - Stops DYP pings for this node\n"
                   "`!event on/off` - Enable/Disable race\n"
                   "`!race newnode` - Advances node (Uses JSON -> OCR -> Text)\n"
-                  "`!race clear` - Wipes current node if broken\n"
+                  "`!race clear` - Clears current node data & stops pings (Keeps Lap/Node)\n"
+                  "`!reset` - Factory resets the entire race to Lap 0.0\n"
                   "`!race ping` - Forces a DYP ping immediately\n"
                   "`!hold @user` - Locks OFA\n"
                   "`!release` - Releases OFA\n"
-                  "`!reset` - Resets to Lap 0.1\n"
                   "`!setlap <lap> <node>` - Manually set lap/node\n"
                   "`!bypass` - Manually +1 DYP\n"
                   "`!bypassje` - Manually complete JE\n"

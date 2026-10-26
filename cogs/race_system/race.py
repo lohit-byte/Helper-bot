@@ -58,31 +58,23 @@ class RaceManager(commands.Cog):
     async def get_dyp_pending_pings(self, channel, state):
         if state['dyp_progress'] >= state['dyp_target']: return ""
         
-        # Fix: Use TESTER_ROLE if in the test channel
-        if channel.id == config.LC_CHANNEL:
-            role_id = config.LC_MEMBERS
-        elif channel.id == config.FBW_CHANNEL:
-            role_id = config.FBW_MEMBERS
-        else:
-            role_id = config.TESTER_ROLE
+        # Fix: Proper routing for Test Channel
+        if channel.id == config.LC_CHANNEL: role_id = config.LC_MEMBERS
+        elif channel.id == config.FBW_CHANNEL: role_id = config.FBW_MEMBERS
+        else: role_id = config.TESTER_ROLE
 
         role = channel.guild.get_role(role_id)
-        if not role: 
-            return ""
+        if not role: return ""
 
         contributors = db.get_dyp_contributors(channel.id)
         mentions = []
         
-        # Get current UTC time
         utc_now = datetime.datetime.now(datetime.timezone.utc)
         utc_hour = utc_now.hour + (utc_now.minute / 60.0)
 
         for member in role.members:
-            if member.bot: continue
-            if member.id in contributors: continue
-            if db.is_user_muted(member.id): continue
+            if member.bot or member.id in contributors or db.is_user_muted(member.id): continue
 
-            # --- TIMEZONE SLEEP CHECK ---
             user_offset = None
             for tz_role_id, offset in config.TIMEZONE_ROLES.items():
                 if any(r.id == tz_role_id for r in member.roles):
@@ -91,16 +83,16 @@ class RaceManager(commands.Cog):
             
             if user_offset is not None:
                 local_hour = (utc_hour + user_offset) % 24
-                # Sleep window: 11:00 PM (23.0) to 8:00 AM (8.0)
                 if local_hour >= 23.0 or local_hour < 8.0:
-                    continue # Skip this user, they are sleeping
+                    continue 
 
             mentions.append(member.mention)
             
         return " ".join(mentions)
 
     async def send_dyp_ping(self, channel, state):
-        if state['dyp_progress'] >= state['dyp_target']: return
+        # Fix: Don't ping if target is 0
+        if state['dyp_target'] == 0 or state['dyp_progress'] >= state['dyp_target']: return
         mentions = await self.get_dyp_pending_pings(channel, state)
         if not mentions: return
         await channel.send(f"⏰ **DYP Pending:** `{state['dyp_progress']}/{state['dyp_target']}`\nPlease complete pending race tasks!\n{mentions}")
@@ -130,6 +122,42 @@ class RaceManager(commands.Cog):
 
         new_state = db.get_state(ctx.channel.id)
         await self.send_dyp_ping(ctx.channel, new_state)
+
+    # SCENARIO 1 & 2: Listener for bare image uploads
+    @commands.Cog.listener()
+    async def on_message(self, message):
+        if message.author.bot or not message.guild: return
+        if message.channel.id not in config.RACE_CHANNELS: return
+        if not message.attachments: return
+        
+        is_admin = any(role.id in config.ADMIN_ROLES for role in message.author.roles)
+        if not is_admin: return
+        
+        if not message.content.startswith(("!", "?")):
+            state = db.get_state(message.channel.id)
+            if not state['event_active'] or state['node'] == 0: return
+
+            await message.add_reaction("👀")
+            ocr_data = await process_race_image(await message.attachments[0].read())
+            
+            if ocr_data:
+                # Check if this is the current node
+                if str(ocr_data['dyp']['target']) == str(state['dyp_target']):
+                    if ocr_data['dyp']['progress'] > state['dyp_progress']:
+                        db.update_state(message.channel.id, dyp_progress=ocr_data['dyp']['progress'])
+                        await message.reply(f"✅ DYP updated via image: `{ocr_data['dyp']['progress']}/{state['dyp_target']}`")
+                    
+                    if parse_amount(ocr_data['je']['progress']) > parse_amount(state['je_progress']):
+                        db.update_state(message.channel.id, je_progress=ocr_data['je']['progress'])
+                        await message.reply(f"✅ JE updated via image: `{ocr_data['je']['progress']}/{state['je_target']}`")
+                    
+                    await message.remove_reaction("👀", self.bot.user)
+                    await message.add_reaction("✅")
+                else:
+                    await message.reply("⚠️ This image looks like a *different* node. If you want to advance, use `!race newnode`.")
+                    await message.remove_reaction("👀", self.bot.user)
+            else:
+                await message.remove_reaction("👀", self.bot.user)
 
     @commands.command(name="race")
     @is_race_channel()
@@ -165,7 +193,8 @@ class RaceManager(commands.Cog):
 
         if action == "clear":
             if not is_admin: return
-            db.update_state(ctx.channel.id, lap=0, node=0, ofa_target=None, dyp_progress=0, je_progress="0", task_desc="Race Task")
+            # Fix: Set dyp_target to 0 so the loop stops pinging
+            db.update_state(ctx.channel.id, lap=0, node=0, ofa_target=None, dyp_progress=0, dyp_target=0, je_progress="0", task_desc="No Active Node")
             db.clear_pending_ofa_for_channel(ctx.channel.id)
             db.reset_dyp_contributors(ctx.channel.id)
             await ctx.send("🧹 **Node status cleared.** Bot will not ping until next `!race newnode`.")
@@ -179,10 +208,18 @@ class RaceManager(commands.Cog):
         if action == "newnode":
             if not is_admin: return
 
+            # SCENARIO 3: Multiple Images
+            if ctx.message.attachments and len(ctx.message.attachments) > 1:
+                await ctx.send("⚠️ You uploaded multiple images. I will only process the **first** one.")
+            
             if ctx.message.attachments:
                 await ctx.send("🔍 Scanning attached image...")
                 ocr_data = await process_race_image(await ctx.message.attachments[0].read())
                 if ocr_data:
+                    # SCENARIO 4: Half-completed image warning
+                    if ocr_data['dyp']['progress'] > 0 or parse_amount(ocr_data['je']['progress']) > 0:
+                        await ctx.send(f"⚠️ Note: This image shows some progress. I am advancing the node and resetting progress to 0.")
+                    
                     desc = f"OFA: {ocr_data['ofa']['task']} | DYP: {ocr_data['dyp']['task']} | JE: {ocr_data['je']['task']}"
                     await self.setup_node(ctx, state, ocr_data['ofa']['target'], ocr_data['dyp']['target'], ocr_data['je']['target'], desc)
                     return
@@ -196,8 +233,26 @@ class RaceManager(commands.Cog):
                     await self.setup_node(ctx, state, ofa_t, int(dyp_r), je_t, desc)
                 except ValueError:
                     await ctx.send("❌ Invalid format. Use `!race newnode 53 hatch | 13 breed | 5 craft`")
-            else:
-                await ctx.send("❌ Please attach an image or provide text.")
+                return
+                
+            # Check JSON Sheet
+            if hasattr(self.bot, 'node_sheet'):
+                n_node = state['node'] + 1
+                n_lap = state['lap']
+                if n_node > config.NODES_PER_LAP:
+                    n_node = 1
+                    n_lap += 1
+                node_key = f"{n_lap}.{n_node}"
+                if node_key in self.bot.node_sheet:
+                    data = self.bot.node_sheet[node_key]
+                    desc = f"OFA: {data['ofa']['task']} | DYP: {data['dyp']['task']} | JE: {data['je']['task']}"
+                    await self.setup_node(ctx, state, data['ofa']['target'], int(data['dyp']['target']), data['je']['target'], desc)
+                    return
+                else:
+                    await ctx.send(f"⚠️ Node `{node_key}` not found in the loaded sheet. Please attach an image or use manual input.")
+                    return
+
+            await ctx.send("❌ Please attach an image, provide text, or load the node sheet.")
 
         elif action == "set":
             if not is_admin: return
@@ -239,8 +294,6 @@ class RaceManager(commands.Cog):
                 amount = 1 if args.lower() == "done" else int(parse_amount(args[1:]))
                 new_progress = min(state['dyp_progress'] + amount, state['dyp_target'])
                 db.update_state(ctx.channel.id, dyp_progress=new_progress)
-                
-                # FIX: Mark the author as a contributor so they don't get pinged
                 db.increment_dyp(ctx.channel.id, ctx.author.id)
                 
                 if new_progress >= state['dyp_target']:
@@ -321,10 +374,13 @@ class RaceManager(commands.Cog):
             state = db.get_state(channel_id)
             if not state['event_active']: continue
             
+            # Fix: Don't ping if node is 0 or target is 0
+            if state['node'] == 0 or state['dyp_target'] == 0: continue
+            
             channel = self.bot.get_channel(channel_id)
             if not channel: continue
 
-            if state['dyp_target'] > 0 and state['dyp_progress'] < state['dyp_target']:
+            if state['dyp_progress'] < state['dyp_target']:
                 await self.send_dyp_ping(channel, state)
 
     @reminder_loop.before_loop

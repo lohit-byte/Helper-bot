@@ -9,11 +9,18 @@ async def process_race_image(image_bytes):
         img = Image.open(io.BytesIO(image_bytes))
         w, h = img.size
         
-        # FIX 1: Crop adjusted to 0.55 to handle wider screens (like iPads)
+        # Crop the right side (Quest Panel)
         img = img.crop((int(w * 0.55), 0, w, h))
+        img = img.convert('RGB')
         
+        # Fix 3: Iterative JPEG compression to stay under the 1MB limit
         buf = io.BytesIO()
-        img.convert('RGB').save(buf, format='JPEG', quality=90)
+        for quality in (90, 80, 70, 60, 50):
+            buf = io.BytesIO()
+            img.save(buf, format='JPEG', quality=quality)
+            if buf.tell() < 1_000_000:
+                break
+        print(f"[OCR] Upload size: {buf.tell() / 1024:.0f} KB", flush=True)
         
         payload = {
             'language': 'eng',
@@ -32,17 +39,18 @@ async def process_race_image(image_bytes):
             async with session.post('https://api.ocr.space/parse/image', data=form, headers=headers) as resp:
                 data = await resp.json(content_type=None)
 
+        # Fix 1: Log OCR API errors
         if data.get("IsErroredOnProcessing"):
-            print(f"[OCR Error] {data.get('ErrorMessage')}")
+            print(f"[OCR Error] API Failure: {data.get('ErrorMessage')}", flush=True)
             return None
 
         res = (data.get("ParsedResults") or [{}])[0]
         lines = (res.get("TextOverlay") or {}).get("Lines") or []
         
         if not lines:
+            print("[OCR Error] No text lines found in image.", flush=True)
             return None
 
-        # FIX 2: Fuzzy Header Matching (handles OCR reading 'One' as '0ne')
         headers_y = {}
         for ln in lines:
             text = ln.get("LineText", "").lower()
@@ -50,30 +58,37 @@ async def process_race_image(image_bytes):
             elif "your part" in text or "do your" in text: headers_y["dyp"] = ln.get("MinTop")
             elif "joint" in text or "effort" in text: headers_y["je"] = ln.get("MinTop")
 
+        # Fix 2: Log missing headers
         if len(headers_y) != 3:
-            print("[OCR] Could not find all 3 headers.")
+            print(f"[OCR Error] Missing headers. Found: {list(headers_y)}", flush=True)
+            print(f"[OCR Debug] All lines: {[l.get('LineText') for l in lines]}", flush=True)
             return None
 
         sorted_h = sorted(headers_y.items(), key=lambda x: x[1])
 
-        # FIX 3: Fraction Blocking (prevents two headers from grabbing the same fraction)
-        # Handles O/13 instead of 0/13
         FRAC = re.compile(r'([\dOo]+(?:[.,]\d+)?(?:\s*[KMB]\b)?)\s*[/|\\]\s*(\d+(?:[.,]\d+)?(?:\s*[KMB]\b)?)', re.IGNORECASE)
         bounds = [y for _, y in sorted_h] + [10**9]
-        targets = {}
+        
+        extracted_data = {}
         
         for i, (key, h_y) in enumerate(sorted_h):
             cands = []
             for ln in lines:
                 top = ln.get("MinTop", 0)
-                # Only look for fractions vertically between this header and the next
                 if h_y <= top < bounds[i + 1]:
                     for m in FRAC.finditer(ln.get("LineText", "")):
-                        cands.append((top, m.group(2).replace(',', '.').upper()))
+                        prog = m.group(1).replace('O', '0').replace('o', '0').replace(',', '.').upper()
+                        targ = m.group(2).replace(',', '.').upper()
+                        cands.append((top, prog, targ))
             if cands:
-                targets[key] = min(cands)[1] # Get the top-most fraction in this block
+                best = min(cands)
+                extracted_data[key] = {"progress": best[1], "target": best[2]}
 
-        # Helper to get text between two Y-coordinates
+        # Fix 4: Reject if missing fractions
+        if len(extracted_data) != 3:
+            print(f"[OCR Error] Missing fractions. Extracted: {extracted_data}", flush=True)
+            return None
+
         def get_task_text(start_y, end_y=None):
             text = ""
             for ln in lines:
@@ -97,14 +112,15 @@ async def process_race_image(image_bytes):
             if "rank up" in text_block: return "Rank Up Monsters"
             if "level up" in text_block and "relic" in text_block: 
                 color = "Gold" if "gold relic" in text_block else ("Silver" if "silver relic" in text_block else "")
-                return f"Level Up {color} Relics"
-            
-            # FIX 4: Extract Rune Levels (e.g., "Level 3 Rune")
+                # Fix 6: Clean up double spaces
+                return f"Level Up {color} Relics".replace("  ", " ")
             if "craft" in text_block:
                 lv = re.search(r'level\s*(\d+)\s*rune', text_block)
-                return f"Craft Level {lv.group(1)} Runes" if lv else "Craft Runes/Relics"
-                
-            if "win" in text_block: return "Win Battles"
+                return f"Craft Level {lv.group(1)} Runes" if lv else "Craft Runes"
+            
+            # Fix 5: Use word boundary for "win"
+            if re.search(r'\bwin\b', text_block): return "Win Battles"
+            
             if "feed" in text_block: return "Feed Food"
             return default_task
 
@@ -112,11 +128,11 @@ async def process_race_image(image_bytes):
             return re.sub(r'(\d)\s*([KMB])$', r'\1 \2', t)
 
         return {
-            "ofa": {"target": norm(targets.get("ofa", "Unknown")), "task": extract_task(ofa_text, "Race Task")},
-            "dyp": {"target": int(float(re.sub(r'[^\d.]', '', targets.get("dyp", "0")))), "task": extract_task(dyp_text, "Race Task")},
-            "je":  {"target": norm(targets.get("je", "Unknown")), "task": extract_task(je_text, "Race Task")}
+            "ofa": {"progress": norm(extracted_data["ofa"]["progress"]), "target": norm(extracted_data["ofa"]["target"]), "task": extract_task(ofa_text, "Race Task")},
+            "dyp": {"progress": int(float(re.sub(r'[^\d.]', '', extracted_data["dyp"]["progress"]))), "target": int(float(re.sub(r'[^\d.]', '', extracted_data["dyp"]["target"]))), "task": extract_task(dyp_text, "Race Task")},
+            "je":  {"progress": norm(extracted_data["je"]["progress"]), "target": norm(extracted_data["je"]["target"]), "task": extract_task(je_text, "Race Task")}
         }
 
     except Exception as e:
-        print(f"[OCR Error] {e}")
+        print(f"[OCR Error] Unexpected Exception: {e}", flush=True)
         return None

@@ -1,3 +1,6 @@
+# ==========================================
+# IMPORTS & HELPER FUNCTIONS
+# ==========================================
 import discord
 from discord.ext import commands, tasks
 import re
@@ -49,6 +52,9 @@ def is_race_channel():
     return commands.check(predicate)
 
 
+# ==========================================
+# RACE MANAGER COG
+# ==========================================
 class RaceManager(commands.Cog):
     def __init__(self, bot):
         self.bot = bot
@@ -57,10 +63,10 @@ class RaceManager(commands.Cog):
     def cog_unload(self):
         self.reminder_loop.cancel()
 
+    # --- PING LOGIC ---
     async def get_dyp_pending_pings(self, channel, state):
         if state['dyp_progress'] >= state['dyp_target']: return ""
         
-        # Only ping the exact number of people needed
         needed = state['dyp_target'] - state['dyp_progress']
         
         if channel.id == config.LC_CHANNEL: role_id = config.LC_MEMBERS
@@ -91,8 +97,6 @@ class RaceManager(commands.Cog):
                     continue 
 
             mentions.append(member.mention)
-            
-            # Stop adding pings once we hit the needed amount
             if len(mentions) >= needed:
                 break
             
@@ -104,6 +108,7 @@ class RaceManager(commands.Cog):
         if not mentions: return
         await channel.send(f"⏰ **DYP Pending:** `{state['dyp_progress']}/{state['dyp_target']}`\nPlease complete pending race tasks!\n{mentions}")
 
+    # --- NODE SETUP ---
     async def setup_node(self, ctx, state, ofa_t, dyp_t, je_t, desc, dyp_prog=0, je_prog="0"):
         new_node = state['node'] + 1
         new_lap = state['lap']
@@ -130,6 +135,7 @@ class RaceManager(commands.Cog):
         new_state = db.get_state(ctx.channel.id)
         await self.send_dyp_ping(ctx.channel, new_state)
 
+    # --- GENERAL COMMANDS ---
     @commands.command(name="roles")
     async def check_roles(self, ctx, member: discord.Member = None):
         member = member or ctx.author
@@ -140,10 +146,9 @@ class RaceManager(commands.Cog):
     @commands.command(name="race_mark")
     @commands.has_any_role(*config.ADMIN_ROLES)
     async def mark_user(self, ctx):
-        """Silently marks users as completed for DYP without changing the total progress number."""
+        """Silently marks users as completed for DYP without changing progress."""
         if not ctx.message.mentions:
             return await ctx.send("❌ Please mention the users to mark (e.g., `!race_mark @User1 @User2`).")
-        
         count = 0
         for user in ctx.message.mentions:
             db.cursor.execute("INSERT OR IGNORE INTO dyp_contributors (channel_id, user_id) VALUES (?, ?)", (ctx.channel.id, user.id))
@@ -154,11 +159,12 @@ class RaceManager(commands.Cog):
     @commands.command(name="race_mute")
     @commands.has_any_role(*config.ADMIN_ROLES)
     async def mute_dyp(self, ctx):
-        """Forces DYP target to match current progress to stop pings for this node."""
+        """Forces DYP target to match current progress to stop pings."""
         state = db.get_state(ctx.channel.id)
         db.update_state(ctx.channel.id, dyp_target=state['dyp_progress'])
         await ctx.send("🔇 **DYP pings disabled for this node.** (Target set to current progress).")
 
+    # --- MAIN !race COMMAND ---
     @commands.command(name="race")
     @is_race_channel()
     async def race(self, ctx, action: str = None, *, args: str = None):
@@ -171,6 +177,7 @@ class RaceManager(commands.Cog):
                 await ctx.send("⏸️ The race event is currently disabled by staff.")
                 return
 
+        # 1. STATUS
         if action is None or action == "status":
             embed = discord.Embed(title="🏁 Current Race Node Status", color=discord.Color.blue())
             embed.add_field(name="Node", value=f"**Lap {state['lap']}.{state['node']}**", inline=False)
@@ -191,19 +198,28 @@ class RaceManager(commands.Cog):
             await ctx.send(embed=embed)
             return
 
+        # 2. CLEAR (Wipes current node only, keeps lap/node)
         if action == "clear":
             if not is_admin: return
-            db.update_state(ctx.channel.id, lap=0, node=0, ofa_target=None, dyp_progress=0, dyp_target=0, je_progress="0", task_desc="No Active Node")
+            db.update_state(
+                ctx.channel.id,
+                ofa_holder=None, ofa_target=None, ofa_done=0,
+                dyp_progress=0, dyp_target=0,
+                je_progress="0", je_done=0,
+                task_desc="No Active Node"
+            )
             db.clear_pending_ofa_for_channel(ctx.channel.id)
             db.reset_dyp_contributors(ctx.channel.id)
-            await ctx.send("🧹 **Node status cleared.** Bot will not ping until next `!race newnode`.")
+            await ctx.send(f"🧹 **Current node cleared (Lap {state['lap']}.{state['node']}).** Bot will not ping until next `!race newnode`.")
             return
 
+        # 3. PING
         if action == "ping":
             if not is_admin: return
             await self.send_dyp_ping(ctx.channel, state)
             return
 
+        # 4. NEW NODE
         if action == "newnode":
             if not is_admin: return
 
@@ -264,6 +280,7 @@ class RaceManager(commands.Cog):
 
             await ctx.send("❌ Please attach an image, provide text, or ensure `node_sheet.json` is in the bot folder.")
 
+        # 5. SET VALUES
         elif action == "set":
             if not is_admin: return
             parts = args.split(maxsplit=1)
@@ -281,6 +298,7 @@ class RaceManager(commands.Cog):
                     db.update_state(ctx.channel.id, je_target=parts[1])
                     await ctx.send(f"✅ JE target set to {parts[1]}.")
 
+        # 6. OFA
         elif action == "ofa":
             if args and args.lower() == "done":
                 if not state['ofa_holder'] or (ctx.author.id != state['ofa_holder'] and not is_admin): return
@@ -294,6 +312,7 @@ class RaceManager(commands.Cog):
             await msg.add_reaction("✅"); await msg.add_reaction("❌")
             db.add_pending_ofa(msg.id, ctx.channel.id, ctx.author.id)
 
+        # 7. DYP / DMP
         elif action in ("dyp", "dmp"):
             if args and args.lower() == "skip":
                 if not is_admin: return
@@ -301,7 +320,6 @@ class RaceManager(commands.Cog):
                 await ctx.send(f"⏭️ **DYP skipped by staff!**")
                 return
                 
-            # Standard "+1" contribution
             if action == "dmp" or (args and args.lower() == "done"):
                 if db.increment_dyp(ctx.channel.id, ctx.author.id):
                     new_state = db.get_state(ctx.channel.id)
@@ -309,7 +327,6 @@ class RaceManager(commands.Cog):
                 else:
                     await ctx.send("❌ You have already contributed for this node, or the target is reached.")
                     
-            # Add, Subtract, or Set Exact
             elif args and (args.isdigit() or args.startswith("+") or args.startswith("-")):
                 if args.isdigit():
                     new_progress = min(int(args), state['dyp_target'])
@@ -324,8 +341,6 @@ class RaceManager(commands.Cog):
                     action_text = "reduced"
                 
                 db.update_state(ctx.channel.id, dyp_progress=new_progress)
-                
-                # Mark author as a contributor so they don't get pinged
                 db.cursor.execute("INSERT OR IGNORE INTO dyp_contributors (channel_id, user_id) VALUES (?, ?)", (ctx.channel.id, ctx.author.id))
                 db.conn.commit()
                 
@@ -334,8 +349,9 @@ class RaceManager(commands.Cog):
                 else:
                     await ctx.send(f"✅ DYP {action_text}. Pending: `{new_progress}/{state['dyp_target']}`")
             else:
-                await ctx.send("Usage: `!race dmp`, `!race dyp 11` (set exact), `!race dyp +2`, or `!race dyp -1`")
+                await ctx.send("Usage: `!race dmp`, `!race dyp 11`, `!race dyp +2`, or `!race dyp -1`")
 
+        # 8. JE
         elif action == "je":
             if args and args.lower() == "skip":
                 if not is_admin: return
@@ -355,6 +371,7 @@ class RaceManager(commands.Cog):
                     db.update_state(ctx.channel.id, je_done=1)
                     await ctx.send("🎉 **JE Target Reached!**")
 
+    # --- STANDALONE !dmp COMMAND ---
     @commands.command(name="dmp")
     @is_race_channel()
     async def dmp(self, ctx):
@@ -368,6 +385,7 @@ class RaceManager(commands.Cog):
         else:
             await ctx.send("❌ You have already contributed for this node, or the target is reached.")
 
+    # --- REACTIONS (OFA APPROVAL) ---
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload):
         if payload.user_id == self.bot.user.id: return
@@ -389,6 +407,7 @@ class RaceManager(commands.Cog):
             await channel.send(f"❌ OFA claim denied.")
         db.delete_pending_ofa(payload.message_id)
 
+    # --- MUTES ---
     @commands.command(name="ignore")
     @is_race_channel()
     async def ignore(self, ctx, time_str: str):
@@ -405,12 +424,12 @@ class RaceManager(commands.Cog):
         db.remove_user_mute(ctx.author.id)
         await ctx.send(f"🔊 {ctx.author.mention} unmuted.")
 
+    # --- BACKGROUND LOOP ---
     @tasks.loop(minutes=15)
     async def reminder_loop(self):
         for channel_id in config.RACE_CHANNELS:
             state = db.get_state(channel_id)
             if not state['event_active']: continue
-            
             if state['node'] == 0 or state['dyp_target'] == 0: continue
             
             channel = self.bot.get_channel(channel_id)

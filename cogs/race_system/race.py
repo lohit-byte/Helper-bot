@@ -105,7 +105,7 @@ class RaceManager(commands.Cog):
         db.clear_pending_ofa_for_channel(ctx.channel.id)
         db.reset_dyp_contributors(ctx.channel.id)
 
-        # Fix: Mark existing progress as dummy IDs so the bot doesn't ping for completed slots
+        # Mark existing progress as dummy IDs so the bot doesn't ping for completed slots
         if int(dyp_prog) > 0:
             for i in range(int(dyp_prog)):
                 db.cursor.execute("INSERT OR IGNORE INTO dyp_contributors (channel_id, user_id) VALUES (?, ?)", (ctx.channel.id, 900000 + i))
@@ -189,7 +189,6 @@ class RaceManager(commands.Cog):
                 await ctx.send("🔍 Scanning attached image...")
                 ocr_data = await process_race_image(await ctx.message.attachments[0].read())
                 if ocr_data:
-                    # FIX: Pass the OCR progress instead of hardcoding 0
                     desc = f"OFA: {ocr_data['ofa']['task']} | DYP: {ocr_data['dyp']['task']} | JE: {ocr_data['je']['task']}"
                     await self.setup_node(
                         ctx, state, 
@@ -261,22 +260,38 @@ class RaceManager(commands.Cog):
             await msg.add_reaction("✅"); await msg.add_reaction("❌")
             db.add_pending_ofa(msg.id, ctx.channel.id, ctx.author.id)
 
-        elif action == "dyp":
+        elif action in ("dyp", "dmp"):
             if args and args.lower() == "skip":
                 if not is_admin: return
                 db.update_state(ctx.channel.id, dyp_progress=state['dyp_target'])
                 await ctx.send(f"⏭️ **DYP skipped by staff!**")
                 return
-            if args and (args.lower() == "done" or args.lower().startswith("+")):
-                amount = 1 if args.lower() == "done" else int(parse_amount(args[1:]))
+                
+            # If they use !race dyp done, or !race dmp, or !race dyp +1
+            if action == "dmp" or (args and args.lower() == "done"):
+                if db.increment_dyp(ctx.channel.id, ctx.author.id):
+                    new_state = db.get_state(ctx.channel.id)
+                    await ctx.send(f"✅ DYP logged. Pending: `{new_state['dyp_progress']}/{new_state['dyp_target']}`")
+                else:
+                    await ctx.send("❌ You have already contributed for this node, or the target is reached.")
+                    
+            elif args and args.startswith("+"):
+                amount = int(parse_amount(args[1:]))
                 new_progress = min(state['dyp_progress'] + amount, state['dyp_target'])
+                
+                # Update the progress by the exact amount
                 db.update_state(ctx.channel.id, dyp_progress=new_progress)
-                db.increment_dyp(ctx.channel.id, ctx.author.id)
+                
+                # Silently mark them as a contributor WITHOUT adding +1
+                db.cursor.execute("INSERT OR IGNORE INTO dyp_contributors (channel_id, user_id) VALUES (?, ?)", (ctx.channel.id, ctx.author.id))
+                db.conn.commit()
                 
                 if new_progress >= state['dyp_target']:
                     await ctx.send(f"🎉 **DYP Target Reached!** ({new_progress}/{state['dyp_target']})")
                 else:
                     await ctx.send(f"✅ DYP logged. Pending: `{new_progress}/{state['dyp_target']}`")
+            else:
+                await ctx.send("Usage: `!race dyp done`, `!race dmp`, or `!race dyp +X`")
 
         elif action == "je":
             if args and args.lower() == "skip":
@@ -307,6 +322,8 @@ class RaceManager(commands.Cog):
         if db.increment_dyp(ctx.channel.id, ctx.author.id):
             state = db.get_state(ctx.channel.id)
             await ctx.send(f"✅ DYP logged for {ctx.author.mention}. Pending: `{state['dyp_progress']}/{state['dyp_target']}`")
+        else:
+            await ctx.send("❌ You have already contributed for this node, or the target is reached.")
 
     @commands.Cog.listener()
     async def on_raw_reaction_add(self, payload):

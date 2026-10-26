@@ -3,6 +3,8 @@ from discord.ext import commands, tasks
 import re
 import time
 import datetime
+import os
+import json
 import config
 from utils.database import db
 from utils.ocr_engine import process_race_image
@@ -105,7 +107,6 @@ class RaceManager(commands.Cog):
         db.clear_pending_ofa_for_channel(ctx.channel.id)
         db.reset_dyp_contributors(ctx.channel.id)
 
-        # Mark existing progress as dummy IDs so the bot doesn't ping for completed slots
         if int(dyp_prog) > 0:
             for i in range(int(dyp_prog)):
                 db.cursor.execute("INSERT OR IGNORE INTO dyp_contributors (channel_id, user_id) VALUES (?, ?)", (ctx.channel.id, 900000 + i))
@@ -120,7 +121,6 @@ class RaceManager(commands.Cog):
             task_desc=desc
         )
         
-        # FIX: Explicitly state that OFA is Available in the initial message
         await ctx.send(f"✅ Node initialized: **Lap {new_lap}.{new_node}**\n"
                        f"**OFA:** `{ofa_t}` (Available ✅)\n**DYP:** `{dyp_prog}/{dyp_t}`\n**JE:** `{je_prog}/{je_t}`\n"
                        f"*Tasks:* {desc}")
@@ -180,6 +180,7 @@ class RaceManager(commands.Cog):
             await self.send_dyp_ping(ctx.channel, state)
             return
 
+        # --- THIS IS THE BLOCK YOU NEED TO REPLACE ---
         if action == "newnode":
             if not is_admin: return
 
@@ -202,7 +203,7 @@ class RaceManager(commands.Cog):
                     )
                     return
                 else:
-                    await ctx.send("⚠️ OCR failed. Use manual input.")
+                    await ctx.send("⚠️ OCR failed. Checking JSON sheet...")
 
             if args:
                 try:
@@ -213,23 +214,33 @@ class RaceManager(commands.Cog):
                     await ctx.send("❌ Invalid format. Use `!race newnode 53 hatch | 13 breed | 5 craft`")
                 return
 
-            if hasattr(self.bot, 'node_sheet'):
-                n_node = state['node'] + 1
-                n_lap = state['lap']
-                if n_node > config.NODES_PER_LAP:
-                    n_node = 1
-                    n_lap += 1
-                node_key = f"{n_lap}.{n_node}"
-                if node_key in self.bot.node_sheet:
-                    data = self.bot.node_sheet[node_key]
-                    desc = f"OFA: {data['ofa']['task']} | DYP: {data['dyp']['task']} | JE: {data['je']['task']}"
-                    await self.setup_node(ctx, state, data['ofa']['target'], int(data['dyp']['target']), data['je']['target'], desc)
-                    return
-                else:
-                    await ctx.send(f"⚠️ Node `{node_key}` not found in the loaded sheet. Please attach an image or use manual input.")
-                    return
+            if os.path.exists('node_sheet.json'):
+                try:
+                    with open('node_sheet.json', 'r') as f:
+                        sheet = json.load(f)
+                    
+                    n_node = state['node'] + 1
+                    n_lap = state['lap']
+                    if n_node > config.NODES_PER_LAP:
+                        n_node = 1
+                        n_lap += 1
+                    
+                    node_key = f"{n_lap}.{n_node}"
+                    
+                    if node_key in sheet:
+                        data = sheet[node_key]
+                        desc = f"OFA: {data['ofa']['task']} | DYP: {data['dyp']['task']} | JE: {data['je']['task']}"
+                        await self.setup_node(ctx, state, data['ofa']['target'], int(data['dyp']['target']), data['je']['target'], desc)
+                        return
+                    else:
+                        await ctx.send(f"⚠️ Node `{node_key}` not found in `node_sheet.json`. Please attach an image or use manual input.")
+                        return
+                except Exception as e:
+                    print(f"[Sheet Error] {e}")
+                    await ctx.send("⚠️ Error reading `node_sheet.json`. It might be formatted wrong.")
 
-            await ctx.send("❌ Please attach an image, provide text, or load the node sheet.")
+            await ctx.send("❌ Please attach an image, provide text, or ensure `node_sheet.json` is in the bot folder.")
+        # --- END OF BLOCK ---
 
         elif action == "set":
             if not is_admin: return
@@ -268,7 +279,6 @@ class RaceManager(commands.Cog):
                 await ctx.send(f"⏭️ **DYP skipped by staff!**")
                 return
                 
-            # If they use !race dyp done, or !race dmp, or !race dyp +1
             if action == "dmp" or (args and args.lower() == "done"):
                 if db.increment_dyp(ctx.channel.id, ctx.author.id):
                     new_state = db.get_state(ctx.channel.id)
@@ -280,10 +290,8 @@ class RaceManager(commands.Cog):
                 amount = int(parse_amount(args[1:]))
                 new_progress = min(state['dyp_progress'] + amount, state['dyp_target'])
                 
-                # Update the progress by the exact amount
                 db.update_state(ctx.channel.id, dyp_progress=new_progress)
                 
-                # Silently mark them as a contributor WITHOUT adding +1
                 db.cursor.execute("INSERT OR IGNORE INTO dyp_contributors (channel_id, user_id) VALUES (?, ?)", (ctx.channel.id, ctx.author.id))
                 db.conn.commit()
                 

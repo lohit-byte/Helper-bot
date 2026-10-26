@@ -120,8 +120,9 @@ class RaceManager(commands.Cog):
             task_desc=desc
         )
         
+        # FIX: Explicitly state that OFA is Available in the initial message
         await ctx.send(f"✅ Node initialized: **Lap {new_lap}.{new_node}**\n"
-                       f"**OFA:** `{ofa_t}`\n**DYP:** `{dyp_prog}/{dyp_t}`\n**JE:** `{je_prog}/{je_t}`\n"
+                       f"**OFA:** `{ofa_t}` (Available ✅)\n**DYP:** `{dyp_prog}/{dyp_t}`\n**JE:** `{je_prog}/{je_t}`\n"
                        f"*Tasks:* {desc}")
 
         new_state = db.get_state(ctx.channel.id)

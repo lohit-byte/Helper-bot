@@ -146,7 +146,6 @@ class RaceManager(commands.Cog):
     @commands.command(name="race_mark")
     @commands.has_any_role(*config.ADMIN_ROLES)
     async def mark_user(self, ctx):
-        """Silently marks users as completed for DYP without changing progress."""
         if not ctx.message.mentions:
             return await ctx.send("❌ Please mention the users to mark (e.g., `!race_mark @User1 @User2`).")
         count = 0
@@ -159,7 +158,6 @@ class RaceManager(commands.Cog):
     @commands.command(name="race_mute")
     @commands.has_any_role(*config.ADMIN_ROLES)
     async def mute_dyp(self, ctx):
-        """Forces DYP target to match current progress to stop pings."""
         state = db.get_state(ctx.channel.id)
         db.update_state(ctx.channel.id, dyp_target=state['dyp_progress'])
         await ctx.send("🔇 **DYP pings disabled for this node.** (Target set to current progress).")
@@ -183,6 +181,14 @@ class RaceManager(commands.Cog):
             embed.add_field(name="Node", value=f"**Lap {state['lap']}.{state['node']}**", inline=False)
             embed.add_field(name="Tasks", value=state['task_desc'], inline=False)
             
+            # Handle empty states gracefully
+            if state['task_desc'] == "No Active Node":
+                embed.add_field(name="One For All (OFA)", value="Not Set ⏳", inline=False)
+                embed.add_field(name="Do Your Part (DYP)", value="Not Set ⏳", inline=True)
+                embed.add_field(name="Joint Effort (JE)", value="Not Set ⏳", inline=True)
+                await ctx.send(embed=embed)
+                return
+
             if state['ofa_holder']:
                 if state['ofa_done']: ofa_status = f"✅ Completed by <@{state['ofa_holder']}> (Target: {state['ofa_target']})"
                 else: ofa_status = f"⏳ In Progress by <@{state['ofa_holder']}> (Target: {state['ofa_target']})"
@@ -205,7 +211,7 @@ class RaceManager(commands.Cog):
                 ctx.channel.id,
                 ofa_holder=None, ofa_target=None, ofa_done=0,
                 dyp_progress=0, dyp_target=0,
-                je_progress="0", je_done=0,
+                je_progress="0", je_target="0", je_done=0,
                 task_desc="No Active Node"
             )
             db.clear_pending_ofa_for_channel(ctx.channel.id)

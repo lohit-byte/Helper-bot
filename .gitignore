@@ -3,6 +3,8 @@
 
 # Database (Live data, never commit)
 race_state.db
+settings.json
+*.db
 
 # Python Cache
 __pycache__/

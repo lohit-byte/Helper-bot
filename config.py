@@ -1,54 +1,41 @@
 import os
+import json
 from dotenv import load_dotenv
 
 load_dotenv()
 
+# --- Secrets ---
 TOKEN = os.getenv("DISCORD_TOKEN")
 OCR_API_KEY = os.getenv("OCR_API_KEY")
 
-FBW_CHANNEL = 1552867667218530344
-LC_CHANNEL = 1552867436477284493
-TEST_CHANNEL = 1555417351082475580
+# --- Load Server Settings ---
+SETTINGS_FILE = "settings.json"
 
-RACE_CHANNELS = [FBW_CHANNEL, LC_CHANNEL, TEST_CHANNEL]
-NODES_PER_LAP = 5
+if not os.path.exists(SETTINGS_FILE):
+    print("⚠️ WARNING: settings.json not found! Please copy settings.example.json to settings.json and fill it out.")
+    SETTINGS = {}
+else:
+    with open(SETTINGS_FILE, "r") as f:
+        SETTINGS = json.load(f)
 
-# ... (Keep your ADMIN_ROLES and OFA_PING_ROLES exactly as they are) ...
-ADMIN_ROLES = [
-    1322740289038848085, 1322740289038848084, 1553689138732208229,
-    1553473580598169691, 1322740289038848082, 1322740289038848081,
-    1554544666324770948, 1390724143837614276, 1553886484640170114,
-    1396986516986662913, 1552931099079090218, 1553237856560877578,
-    1390723596485263532,
-]
+# Channels
+CHANNELS = SETTINGS.get("channels", {})
+RACE_CHANNELS = CHANNELS.get("race_channels", [])
+TEST_CHANNEL = CHANNELS.get("test_channel")
 
-OFA_PING_ROLES = {
-    FBW_CHANNEL: [1390724143837614276, 1396986516986662913, 1553886484640170114],
-    LC_CHANNEL: [1553237856560877578, 1390723596485263532],
-    TEST_CHANNEL: [1390724143837614276, 1396986516986662913, 1553886484640170114]
-}
+# Roles
+ROLES = SETTINGS.get("roles", {})
+ADMIN_ROLES = ROLES.get("admin_roles", [])
+TESTER_ROLE = ROLES.get("tester_role")
 
-# Team Member Roles
-FBW_MEMBERS = 1322740288791515136
-LC_MEMBERS = 1552873075916410981
-TESTER_ROLE = 1555446749638697021  # <-- ADD THIS
+# Maps a Channel ID to its specific Team Member Role ID
+TEAM_MEMBER_ROLES = {int(k): v for k, v in ROLES.get("team_member_roles", {}).items()}
 
-# Map Role IDs to their UTC Offset (in hours)
-TIMEZONE_ROLES = {
-    1563180551379222659: -5,   # USA (EST)
-    1563180942560993433: -5,   # Canada (EST)
-    1563181089537790133: -6,   # Mexico (CST)
-    1563181300784046081: -3,   # LATAM (BRT)
-    1563181422074794085: 0,    # UK (GMT)
-    1563181509870096394: 1,    # Europe (CET)
-    1563181672814350447: 2,    # South Africa (SAST)
-    1563182182913286164: 4,    # Middle East (GST)
-    1563182626452410378: 5,    # Pakistan (PKT)
-    1563182954153381918: 5.5,  # India (IST)
-    1563183083564306555: 6,    # Bangladesh (BST)
-    1563183406937022654: 7,    # Thailand & Vietnam (ICT)
-    1563184007456227328: 8,    # Singapore/GMT+8
-    1563184611243065344: 9,    # Japan & Korea (JST)
-    1563184738808631336: 10,   # Australia (AEST)
-    1563184951602712656: 12,   # New Zealand (NZST)
-}
+# Maps a Channel ID to a list of roles to ping for OFA
+OFA_PING_ROLES = {int(k): v for k, v in ROLES.get("ofa_ping_roles", {}).items()}
+
+# Maps a Timezone Role ID to its UTC offset
+TIMEZONE_ROLES = {int(k): v for k, v in ROLES.get("timezone_roles", {}).items()}
+
+# Config
+NODES_PER_LAP = SETTINGS.get("nodes_per_lap", 5)
